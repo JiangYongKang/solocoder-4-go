@@ -1,0 +1,7 @@
+产物不满意：
+1. CreateAppointment 方法内部先调用 LockSlot 再调用 ConfirmAppointment，LockSlot 内部获取一次互斥锁操作完成后释放，ConfirmAppointment 再次获取锁操作号源。在两个方法中间的间隙，号源的锁定状态和剩余容量可能被其他 goroutine 修改，例如另一患者在同一号源上完成预约后号源满额，ConfirmAppointment 中的 BookedCount 递增就会突破容量上限。根因是 CreateAppointment 在组合调用两个原子方法时没有保持同一个锁持有时长，正确做法应该是将锁定和确认逻辑合并到一个加锁的方法内，保证操作时序的原子性。
+2. ChangeAppointment 方法中对新旧号源是否相同的判断使用了 `req.AppointmentID == req.NewSlotID`，这是用预约 ID 与号源 ID 做比较，两个是完全不同类型的不同 ID 体系。虽然 TestChangeAppointment_SameSlot 测试用例中错误地将 appt.ID 传给了 NewSlotID 使得这条比较侥幸通过，但正常业务场景下传入正确的号源 ID 时，这个判断完全无法拦截"改约到同一号源"的行为，会导致号源计数器被异常操作。根因是混淆了预约 ID 和号源 ID 这两个不同的标识字段，应改为比较 `oldAppt.SlotID == req.NewSlotID`。
+
+过程不满意：
+1. 模型在收到提示词后立即通过 todo_write 创建了 9 项任务计划，然后才开始阅读项目目录结构和已有模块代码。正确做法是先阅读需求文档和项目结构，理解模块职责边界后再制定执行计划，而不是在无信息的情况下直接规划任务粒度。
+2. 模型在编写 service_test.go 时首次写入失败（Write 工具返回 status: failed），文件路径显示为 undefined，随后第二次尝试才成功写入。这属于工具使用不规范的信号，应先确认目录存在且文件路径正确后再执行写入操作，避免因路径错误导致的无效操作。

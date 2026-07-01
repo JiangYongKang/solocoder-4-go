@@ -1,0 +1,7 @@
+产物不满意：
+1. CalculateAttendance 方法中计算考勤状态的核心逻辑 `calculateStatus` 有一个判定缺陷：当 CheckOutTime 不为 nil 时，方法会进行迟到和早退的联合判定。但如果 `isLate` 和 `isEarlyLeave` 同时为 true，代码返回 `StatusEarlyLeave` 覆盖了迟到的信息。然而提示词要求"根据考勤规则和签到签退时间判断正常、迟到、早退或缺勤状态"，同时迟到和早退的情况应该是一个合法的业务状态（既迟到又早退），不应被简化为只报早退。当前实现丢失了迟到信息，导致考勤汇总中无法准确反映该学生的完整出勤情况。应支持"迟到且早退"的复合状态，或至少在汇总统计中分别计入迟到和早退。
+2. calculateStatus 中迟到判定使用了 `checkInTime.After(lateThreshold) && checkInTime.Before(ruleCheckInEnd.Add(time.Nanosecond))`，这个条件在 checkInTime 刚好等于 CheckInEndTime 时会判定为不迟到（因为 Before 严格小于），但如果学生在签到截止时刻准时到达，实际应该算正常而非迟到，逻辑本身没问题。问题在于早退判定也采用了类似的微妙边界条件：当 checkOutTime 刚好等于 earlyThreshold 时，`Before` 判断为 false，不算早退。但 earlyThreshold 是从 CheckOutEndTime 往前推 EarlyLeaveThresholdMinutes 分钟得出的，如果学生恰好在阈值临界点上签退，判定结果取决于纳秒级别的精度差异，这在业务上会产生不一致的边界行为。应统一使用同一精度的比较方式（如截断到分钟级别）。
+
+过程不满意：
+1. 模型在首次运行测试时遇到多个测试失败，给出的第一个原因是"getFirstID 函数遍历 map 时顺序随机"，然后修改了 getFirstID 添加排序。这个定位是准确的，但修复后又连续出现更多测试失败，模型依次发现并修改了：签退时间设置问题、GetClassSummary 时间范围问题、GenerateAbsenceNotifications 中的签退时间问题、CheckIn 方法中检查顺序问题。这一系列修改共涉及 7 次文件编辑操作，模型每发现一个失败就修复一个，但没有一次性地在第一次失败后完整运行所有测试查看全貌。正确做法是第一次测试失败后读取完整的失败输出，列出所有问题清单，制定系统性修复计划后再逐一修改，避免反复修改同一个文件的碎片化操作。
+2. 模型在服务实现中将 checkInRecords 的 key 设计为 `studentID + "-" + sessionID`，但在 CheckIn 方法中访问 record 时，先用 session 做存在性校验，再用 student 做存在性校验，再用 class 做存在性校验，再用 class.Students 做归属校验，形成一条 4 步的长校验链。这种层层嵌套的校验模式虽然保证了数据的完整性，但在 CheckIn 这种高频调用场景中，每次都要做四次 map 查找，效率不高。优化做法是将最不可能失败的校验放在最前面（如学生是否存在），如果失败就快速返回，遵循"快速失败"原则。
