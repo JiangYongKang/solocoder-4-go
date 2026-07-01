@@ -399,8 +399,6 @@ func (s *Store) RecordResult(req *RecordResultRequest) (*CheckResult, error) {
 				isAbnormal = true
 			}
 		}
-	} else {
-		reference = req.Remarks
 	}
 
 	result := &CheckResult{

@@ -145,10 +145,6 @@ func (ba *BedAllocator) findAvailableBeds(ward *Ward, criteria AllocateCriteria)
 			continue
 		}
 
-		if criteria.BedType != "" && bed.Type != criteria.BedType {
-			continue
-		}
-
 		if !ba.matchPatientCondition(bed, criteria) {
 			continue
 		}
@@ -187,11 +183,11 @@ func (ba *BedAllocator) matchPatientCondition(bed *Bed, criteria AllocateCriteri
 		return bed.Type == BedTypeSurgery || bed.Type == BedTypeICU || bed.Type == BedTypeGeneral
 	}
 
-	if criteria.PatientCondition == "general" {
+	if criteria.PatientCondition == "general" || criteria.PatientCondition == "" {
 		return bed.Type == BedTypeGeneral || bed.Type == BedTypeSurgery
 	}
 
-	return true
+	return false
 }
 
 func (ba *BedAllocator) TransferBed(criteria TransferCriteria) (*AdmissionRecord, error) {

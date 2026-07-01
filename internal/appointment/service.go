@@ -13,6 +13,51 @@ func NewService(store *Store) *Service {
 	return &Service{store: store}
 }
 
+func (svc *Service) checkSlotAvailableForLock(slot *ScheduleSlot, now time.Time) error {
+	if slot.Status == SlotStatusLocked {
+		if slot.LockExpireAt != nil && now.After(*slot.LockExpireAt) {
+			svc.clearLockInternal(slot)
+		} else {
+			return ErrSlotAlreadyLocked
+		}
+	}
+
+	if slot.TotalCapacity-slot.BookedCount <= 0 {
+		return ErrSlotNoCapacity
+	}
+
+	return nil
+}
+
+func (svc *Service) checkSlotLockValid(slot *ScheduleSlot, patientID string, now time.Time) error {
+	if slot.Status != SlotStatusLocked {
+		return ErrSlotNotLocked
+	}
+
+	if slot.LockExpireAt != nil && now.After(*slot.LockExpireAt) {
+		svc.clearLockInternal(slot)
+		return ErrSlotLockExpired
+	}
+
+	if slot.LockedBy != patientID {
+		return ErrInvalidLockOwner
+	}
+
+	if slot.TotalCapacity-slot.BookedCount <= 0 {
+		svc.clearLockInternal(slot)
+		return ErrSlotNoCapacity
+	}
+
+	return nil
+}
+
+func (svc *Service) checkSlotHasCapacity(slot *ScheduleSlot) error {
+	if slot.TotalCapacity-slot.BookedCount <= 0 {
+		return ErrSlotNoCapacity
+	}
+	return nil
+}
+
 type AddScheduleRequest struct {
 	DoctorID   string
 	Date       string
@@ -227,35 +272,30 @@ func (svc *Service) buildSlotQueryResult(slot *ScheduleSlot, now time.Time) Slot
 }
 
 func (svc *Service) LockSlot(req *LockSlotRequest) (*ScheduleSlot, error) {
-	svc.store.mu.Lock()
-	defer svc.store.mu.Unlock()
-
 	if svc.store.LockTimeout <= 0 {
 		return nil, ErrLockTimeoutInvalid
 	}
 
-	if _, exists := svc.store.patients[req.PatientID]; !exists {
+	svc.store.mu.RLock()
+	_, patientExists := svc.store.patients[req.PatientID]
+	slot, slotExists := svc.store.slotMap[req.SlotID]
+	if !patientExists {
+		svc.store.mu.RUnlock()
 		return nil, ErrPatientNotFound
 	}
-
-	slot, exists := svc.store.slotMap[req.SlotID]
-	if !exists {
+	if !slotExists {
+		svc.store.mu.RUnlock()
 		return nil, ErrSlotNotFound
 	}
+	slot.mu.Lock()
+	svc.store.mu.RUnlock()
+
+	defer slot.mu.Unlock()
 
 	now := svc.store.NowFunc()
 
-	if slot.Status == SlotStatusLocked {
-		if slot.LockExpireAt != nil && now.After(*slot.LockExpireAt) {
-			svc.clearLockInternal(slot)
-		} else {
-			return nil, ErrSlotAlreadyLocked
-		}
-	}
-
-	remaining := slot.TotalCapacity - slot.BookedCount
-	if remaining <= 0 {
-		return nil, ErrSlotNoCapacity
+	if err := svc.checkSlotAvailableForLock(slot, now); err != nil {
+		return nil, err
 	}
 
 	lockedAt := now
@@ -270,38 +310,36 @@ func (svc *Service) LockSlot(req *LockSlotRequest) (*ScheduleSlot, error) {
 }
 
 func (svc *Service) ConfirmAppointment(req *ConfirmAppointmentRequest) (*Appointment, error) {
-	svc.store.mu.Lock()
-	defer svc.store.mu.Unlock()
-
-	patient, exists := svc.store.patients[req.PatientID]
-	if !exists {
+	svc.store.mu.RLock()
+	patient, patientExists := svc.store.patients[req.PatientID]
+	slot, slotExists := svc.store.slotMap[req.SlotID]
+	if !patientExists {
+		svc.store.mu.RUnlock()
 		return nil, ErrPatientNotFound
 	}
-
-	slot, exists := svc.store.slotMap[req.SlotID]
-	if !exists {
+	if !slotExists {
+		svc.store.mu.RUnlock()
 		return nil, ErrSlotNotFound
 	}
+	slot.mu.Lock()
+	svc.store.mu.RUnlock()
 
 	now := svc.store.NowFunc()
 
-	if slot.Status != SlotStatusLocked {
-		return nil, ErrSlotNotLocked
+	if err := svc.checkSlotLockValid(slot, req.PatientID, now); err != nil {
+		slot.mu.Unlock()
+		return nil, err
 	}
 
-	if slot.LockExpireAt != nil && now.After(*slot.LockExpireAt) {
-		svc.clearLockInternal(slot)
-		return nil, ErrSlotLockExpired
-	}
+	slot.mu.Unlock()
 
-	if slot.LockedBy != req.PatientID {
-		return nil, ErrInvalidLockOwner
-	}
+	svc.store.mu.Lock()
+	slot.mu.Lock()
 
-	remaining := slot.TotalCapacity - slot.BookedCount
-	if remaining <= 0 {
-		svc.clearLockInternal(slot)
-		return nil, ErrSlotNoCapacity
+	if err := svc.checkSlotLockValid(slot, req.PatientID, now); err != nil {
+		slot.mu.Unlock()
+		svc.store.mu.Unlock()
+		return nil, err
 	}
 
 	apptID := svc.store.generateID("APT")
@@ -335,17 +373,23 @@ func (svc *Service) ConfirmAppointment(req *ConfirmAppointmentRequest) (*Appoint
 	svc.store.appointments[apptID] = appointment
 	svc.store.patientApptMap[patient.ID] = append(svc.store.patientApptMap[patient.ID], apptID)
 
+	slot.mu.Unlock()
+	svc.store.mu.Unlock()
+
 	return appointment, nil
 }
 
 func (svc *Service) ReleaseLock(req *ReleaseLockRequest) error {
-	svc.store.mu.Lock()
-	defer svc.store.mu.Unlock()
-
+	svc.store.mu.RLock()
 	slot, exists := svc.store.slotMap[req.SlotID]
 	if !exists {
+		svc.store.mu.RUnlock()
 		return ErrSlotNotFound
 	}
+	slot.mu.Lock()
+	svc.store.mu.RUnlock()
+
+	defer slot.mu.Unlock()
 
 	if slot.Status != SlotStatusLocked {
 		return ErrSlotNotLocked
@@ -372,13 +416,18 @@ func (svc *Service) clearLockInternal(slot *ScheduleSlot) {
 }
 
 func (svc *Service) CheckAndReleaseExpiredLocks() int {
-	svc.store.mu.Lock()
-	defer svc.store.mu.Unlock()
+	svc.store.mu.RLock()
+	slots := make([]*ScheduleSlot, 0, len(svc.store.slotMap))
+	for _, slot := range svc.store.slotMap {
+		slots = append(slots, slot)
+	}
+	svc.store.mu.RUnlock()
 
 	now := svc.store.NowFunc()
 	releasedCount := 0
 
-	for _, slot := range svc.store.slotMap {
+	for _, slot := range slots {
+		slot.mu.Lock()
 		if slot.Status == SlotStatusLocked && slot.LockExpireAt != nil && now.After(*slot.LockExpireAt) {
 			svc.clearLockInternal(slot)
 			if slot.BookedCount >= slot.TotalCapacity {
@@ -388,42 +437,47 @@ func (svc *Service) CheckAndReleaseExpiredLocks() int {
 			}
 			releasedCount++
 		}
+		slot.mu.Unlock()
 	}
 
 	return releasedCount
 }
 
 func (svc *Service) CreateAppointment(req *CreateAppointmentRequest) (*Appointment, error) {
-	svc.store.mu.Lock()
-	defer svc.store.mu.Unlock()
-
 	if svc.store.LockTimeout <= 0 {
 		return nil, ErrLockTimeoutInvalid
 	}
 
-	patient, exists := svc.store.patients[req.PatientID]
-	if !exists {
+	svc.store.mu.RLock()
+	patient, patientExists := svc.store.patients[req.PatientID]
+	slot, slotExists := svc.store.slotMap[req.SlotID]
+	if !patientExists {
+		svc.store.mu.RUnlock()
 		return nil, ErrPatientNotFound
 	}
-
-	slot, exists := svc.store.slotMap[req.SlotID]
-	if !exists {
+	if !slotExists {
+		svc.store.mu.RUnlock()
 		return nil, ErrSlotNotFound
 	}
+	slot.mu.Lock()
+	svc.store.mu.RUnlock()
 
 	now := svc.store.NowFunc()
 
-	if slot.Status == SlotStatusLocked {
-		if slot.LockExpireAt != nil && now.After(*slot.LockExpireAt) {
-			svc.clearLockInternal(slot)
-		} else {
-			return nil, ErrSlotAlreadyLocked
-		}
+	if err := svc.checkSlotAvailableForLock(slot, now); err != nil {
+		slot.mu.Unlock()
+		return nil, err
 	}
 
-	remaining := slot.TotalCapacity - slot.BookedCount
-	if remaining <= 0 {
-		return nil, ErrSlotNoCapacity
+	slot.mu.Unlock()
+
+	svc.store.mu.Lock()
+	slot.mu.Lock()
+
+	if err := svc.checkSlotAvailableForLock(slot, now); err != nil {
+		slot.mu.Unlock()
+		svc.store.mu.Unlock()
+		return nil, err
 	}
 
 	apptID := svc.store.generateID("APT")
@@ -446,9 +500,6 @@ func (svc *Service) CreateAppointment(req *CreateAppointmentRequest) (*Appointme
 	}
 
 	slot.BookedCount++
-	if slot.Status == SlotStatusLocked {
-		svc.clearLockInternal(slot)
-	}
 
 	if slot.BookedCount >= slot.TotalCapacity {
 		slot.Status = SlotStatusBooked
@@ -458,6 +509,9 @@ func (svc *Service) CreateAppointment(req *CreateAppointmentRequest) (*Appointme
 
 	svc.store.appointments[apptID] = appointment
 	svc.store.patientApptMap[patient.ID] = append(svc.store.patientApptMap[patient.ID], apptID)
+
+	slot.mu.Unlock()
+	svc.store.mu.Unlock()
 
 	return appointment, nil
 }
@@ -525,6 +579,33 @@ func (svc *Service) ChangeAppointment(req *ChangeAppointmentRequest) (*Appointme
 		return nil, ErrCannotChangePast
 	}
 
+	oldSlot, oldSlotExists := svc.store.slotMap[oldAppt.SlotID]
+
+	var firstSlot, secondSlot *ScheduleSlot
+	if oldSlotExists && oldAppt.SlotID < req.NewSlotID {
+		firstSlot = oldSlot
+		secondSlot = newSlot
+	} else {
+		firstSlot = newSlot
+		secondSlot = oldSlot
+	}
+
+	if firstSlot != nil {
+		firstSlot.mu.Lock()
+	}
+	if secondSlot != nil {
+		secondSlot.mu.Lock()
+	}
+
+	defer func() {
+		if secondSlot != nil {
+			secondSlot.mu.Unlock()
+		}
+		if firstSlot != nil {
+			firstSlot.mu.Unlock()
+		}
+	}()
+
 	if newSlot.Status == SlotStatusLocked {
 		if newSlot.LockExpireAt != nil && now.After(*newSlot.LockExpireAt) {
 			svc.clearLockInternal(newSlot)
@@ -533,12 +614,10 @@ func (svc *Service) ChangeAppointment(req *ChangeAppointmentRequest) (*Appointme
 		}
 	}
 
-	newRemaining := newSlot.TotalCapacity - newSlot.BookedCount
-	if newRemaining <= 0 {
-		return nil, ErrSlotNoCapacity
+	if err := svc.checkSlotHasCapacity(newSlot); err != nil {
+		return nil, err
 	}
 
-	oldSlot, oldSlotExists := svc.store.slotMap[oldAppt.SlotID]
 	if oldSlotExists {
 		if oldSlot.BookedCount > 0 {
 			oldSlot.BookedCount--
@@ -626,6 +705,11 @@ func (svc *Service) CancelAppointment(req *CancelAppointmentRequest) (*Appointme
 
 	slot, slotExists := svc.store.slotMap[appt.SlotID]
 	if slotExists {
+		slot.mu.Lock()
+		defer slot.mu.Unlock()
+	}
+
+	if slotExists {
 		if slot.BookedCount > 0 {
 			slot.BookedCount--
 		}
@@ -646,12 +730,12 @@ func (svc *Service) CancelAppointment(req *CancelAppointmentRequest) (*Appointme
 }
 
 func (svc *Service) RecordNoShow(req *RecordNoShowRequest) (*NoShowRecord, error) {
-	svc.store.mu.Lock()
-	defer svc.store.mu.Unlock()
-
 	if req.Remark == "" {
 		return nil, ErrNoShowRemarkRequired
 	}
+
+	svc.store.mu.Lock()
+	defer svc.store.mu.Unlock()
 
 	appt, exists := svc.store.appointments[req.AppointmentID]
 	if !exists {
@@ -660,6 +744,12 @@ func (svc *Service) RecordNoShow(req *RecordNoShowRequest) (*NoShowRecord, error
 
 	if appt.Status != AppointmentStatusConfirmed {
 		return nil, ErrAppointmentNotActive
+	}
+
+	slot, slotExists := svc.store.slotMap[appt.SlotID]
+	if slotExists {
+		slot.mu.Lock()
+		defer slot.mu.Unlock()
 	}
 
 	now := svc.store.NowFunc()
@@ -680,7 +770,6 @@ func (svc *Service) RecordNoShow(req *RecordNoShowRequest) (*NoShowRecord, error
 	appt.Status = AppointmentStatusNoShow
 	appt.IsNoShow = true
 
-	slot, slotExists := svc.store.slotMap[appt.SlotID]
 	if slotExists {
 		if slot.BookedCount > 0 {
 			slot.BookedCount--

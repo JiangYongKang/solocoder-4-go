@@ -798,8 +798,20 @@ func TestIsDateWithinDays(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "expiry yesterday - within 30 days",
+			name:     "expiry yesterday - not within 30 days (already expired)",
 			expiry:   time.Date(2024, 6, 14, 23, 59, 59, 999999999, time.Local),
+			days:     30,
+			expected: false,
+		},
+		{
+			name:     "expiry long ago - not within 30 days (already expired)",
+			expiry:   time.Date(2024, 1, 1, 0, 0, 0, 0, time.Local),
+			days:     30,
+			expected: false,
+		},
+		{
+			name:     "expiry day after tomorrow - within 30 days",
+			expiry:   time.Date(2024, 6, 17, 0, 0, 0, 0, time.Local),
 			days:     30,
 			expected: true,
 		},
@@ -1046,5 +1058,144 @@ func TestOutboundConsistentTimeBase(t *testing.T) {
 			t.Errorf("all outbound details should have the same timestamp, got %v vs %v",
 				detail.OutboundTime, result.Details[0].OutboundTime)
 		}
+	}
+}
+
+func TestGetExpiringBatchesExcludesExpiredStatus(t *testing.T) {
+	s := NewDrugTraceService()
+	_ = s.AddDrug("DRUG001", "阿莫西林胶囊", "0.5g*24粒")
+
+	today := time.Now()
+	todayEvening := time.Date(today.Year(), today.Month(), today.Day(), 23, 59, 59, 999999999, today.Location())
+	yesterdayEvening := time.Date(today.Year(), today.Month(), today.Day()-1, 23, 59, 59, 999999999, today.Location())
+	in7Days := today.AddDate(0, 0, 7)
+
+	_ = s.InboundBatch("DRUG001", "B_EXPIRED", 100,
+		today.AddDate(-1, 0, 0), yesterdayEvening, "供应商A", "张三")
+	_ = s.InboundBatch("DRUG001", "B_NORMAL", 100,
+		today.AddDate(-1, 0, 0), in7Days, "供应商A", "张三")
+	_ = s.InboundBatch("DRUG001", "B_TODAY", 100,
+		today.AddDate(-1, 0, 0), todayEvening, "供应商A", "张三")
+
+	expiring, err := s.GetExpiringBatches(30)
+	if err != nil {
+		t.Fatalf("GetExpiringBatches failed: %v", err)
+	}
+	if len(expiring) != 2 {
+		t.Errorf("expected 2 expiring batches, got %d", len(expiring))
+	}
+
+	batchNos := make(map[string]bool)
+	for _, b := range expiring {
+		batchNos[b.BatchNumber] = true
+	}
+	if batchNos["B_EXPIRED"] {
+		t.Error("expired status batch should not be in expiring list")
+	}
+	if !batchNos["B_NORMAL"] || !batchNos["B_TODAY"] {
+		t.Error("normal batches should be in expiring list")
+	}
+}
+
+func TestGetExpiringBatchesExcludesLongExpiredNotUpdated(t *testing.T) {
+	s := NewDrugTraceService()
+	_ = s.AddDrug("DRUG001", "阿莫西林胶囊", "0.5g*24粒")
+
+	today := time.Now()
+	longAgoExpiry := today.AddDate(-1, 0, 0)
+	in7Days := today.AddDate(0, 0, 7)
+
+	_ = s.InboundBatch("DRUG001", "B_LONG_AGO", 100,
+		today.AddDate(-2, 0, 0), longAgoExpiry, "供应商A", "张三")
+	_ = s.InboundBatch("DRUG001", "B_NORMAL", 100,
+		today.AddDate(-1, 0, 0), in7Days, "供应商A", "张三")
+
+	bLongAgo, _ := s.GetBatch("B_LONG_AGO")
+	bLongAgo.Status = BatchStatusNormal
+
+	expiring, err := s.GetExpiringBatches(30)
+	if err != nil {
+		t.Fatalf("GetExpiringBatches failed: %v", err)
+	}
+
+	for _, b := range expiring {
+		if b.BatchNumber == "B_LONG_AGO" {
+			t.Error("long expired batch should not be in expiring list")
+		}
+	}
+
+	if len(expiring) != 1 || expiring[0].BatchNumber != "B_NORMAL" {
+		t.Errorf("expected only B_NORMAL, got %v", expiring)
+	}
+}
+
+func TestBatchNotInBothExpiredAndExpiringLists(t *testing.T) {
+	s := NewDrugTraceService()
+	_ = s.AddDrug("DRUG001", "阿莫西林胶囊", "0.5g*24粒")
+
+	today := time.Now()
+	yesterdayEvening := time.Date(today.Year(), today.Month(), today.Day()-1, 23, 59, 59, 999999999, today.Location())
+	in3Days := today.AddDate(0, 0, 3)
+	in7Days := today.AddDate(0, 0, 7)
+
+	_ = s.InboundBatch("DRUG001", "B_YESTERDAY", 100,
+		today.AddDate(-1, 0, 0), yesterdayEvening, "供应商A", "张三")
+	_ = s.InboundBatch("DRUG001", "B_SOON", 100,
+		today.AddDate(-1, 0, 0), in3Days, "供应商A", "张三")
+	_ = s.InboundBatch("DRUG001", "B_NORMAL", 100,
+		today.AddDate(-1, 0, 0), in7Days, "供应商A", "张三")
+
+	expired, err := s.GetExpiredBatches()
+	if err != nil {
+		t.Fatalf("GetExpiredBatches failed: %v", err)
+	}
+
+	expiring, err := s.GetExpiringBatches(30)
+	if err != nil {
+		t.Fatalf("GetExpiringBatches failed: %v", err)
+	}
+
+	expiredMap := make(map[string]bool)
+	for _, b := range expired {
+		expiredMap[b.BatchNumber] = true
+	}
+
+	for _, b := range expiring {
+		if expiredMap[b.BatchNumber] {
+			t.Errorf("batch %s should not be in both expired and expiring lists", b.BatchNumber)
+		}
+	}
+
+	if len(expired) != 1 || expired[0].BatchNumber != "B_YESTERDAY" {
+		t.Errorf("expired list should contain only B_YESTERDAY")
+	}
+
+	if len(expiring) != 2 {
+		t.Errorf("expiring list should contain B_SOON and B_NORMAL")
+	}
+}
+
+func TestGetExpiringBatchesExcludesRecalled(t *testing.T) {
+	s := NewDrugTraceService()
+	_ = s.AddDrug("DRUG001", "阿莫西林胶囊", "0.5g*24粒")
+
+	today := time.Now()
+	in7Days := today.AddDate(0, 0, 7)
+	in14Days := today.AddDate(0, 0, 14)
+
+	_ = s.InboundBatch("DRUG001", "B_RECALL", 100,
+		today.AddDate(-1, 0, 0), in7Days, "供应商A", "张三")
+	_ = s.InboundBatch("DRUG001", "B_NORMAL", 100,
+		today.AddDate(-1, 0, 0), in14Days, "供应商A", "张三")
+
+	_ = s.RecallBatch("B_RECALL", "质量问题", "管理员")
+
+	expiring, err := s.GetExpiringBatches(30)
+	if err != nil {
+		t.Fatalf("GetExpiringBatches failed: %v", err)
+	}
+
+	if len(expiring) != 1 || expiring[0].BatchNumber != "B_NORMAL" {
+		t.Errorf("expected only B_NORMAL, got %v", expiring)
 	}
 }

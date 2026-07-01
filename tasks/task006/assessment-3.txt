@@ -1,0 +1,7 @@
+产物不满意：
+1. models.go 的 isDateWithinDays 修复中，模型自行编写了 `(expiryDateOnly.After(asOfOnly) || expiryDateOnly.Equal(asOfOnly))` 作为下限排除逻辑。该判断等价于对同模块已存在的 isDateExpired 函数取反，即 `!isDateExpired(expiryDate, asOf)`。模型没有复用 isDateExpired 函数而是独立实现了相同的日期比较逻辑，导致同一模块内日期过期判定标准分散在两个函数中重复维护。若后续需要调整日期判定精度则需同步修改 isDateExpired 和 isDateWithinDays 两处，增加了不一致风险和维护成本。正确做法是在 isDateWithinDays 函数中调用 `if isDateExpired(expiryDate, asOf) { return false }` 完成下限排除，保持模块内日期判定逻辑以 isDateExpired 为唯一来源。
+
+过程不满意：
+1. 模型在收到提示词后未经任何代码分析就直接连续调用了两次 todo_write 创建任务计划，随后才开始读取 models.go 和 drugtrace.go。这违反了标注规范中"不能在刚收到任务时就直接创建 TodoList，应先分析问题再规划"的要求。由于规划时对代码结构不了解，模型在后续执行中出现了先读 drugtrace.go 找 GetExpiringBatches 位置做修改、之后又再次读取同一个 drugtrace.go 文件找 OutboundFIFO 位置的低效行为，说明没有在一次读取中完整理解文件结构就匆忙进入修改。
+
+2. 模型修改 isDateWithinDays 函数后没有使用搜索工具检查该函数在模块内的所有调用方是否受影响。虽然该函数实际仅被 GetExpiringBatches 调用，但模型未做此验证就继续其他修改。完成全部修改后运行 go test 通过，但模型在总结回复中声称"32 个测试函数全部通过"，而实际 go test 输出显示有 33 个测试函数（原有 29 个加上模型新增的 4 个共 33 个），测试函数数量的统计不准确说明模型没有认真核对测试运行的实际输出数据。正确做法是修改函数逻辑后主动排查所有调用方，并如实核对测试输出数据中的测试数量再总结。

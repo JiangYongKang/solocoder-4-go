@@ -3,6 +3,7 @@ package examgrading
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1934,10 +1935,17 @@ func TestDuplicateSubmissionReturnsExistingID(t *testing.T) {
 		t.Errorf("expected exam ID %s, got %s", exam.ID, dupErr.ExamID)
 	}
 
-	if dupErr.Error() != ErrAlreadySubmitted.Error() {
-		t.Errorf("expected error message '%s', got '%s'",
-			ErrAlreadySubmitted.Error(), dupErr.Error())
+	errorMsg := dupErr.Error()
+	if !strings.Contains(errorMsg, ErrAlreadySubmitted.Error()) {
+		t.Errorf("error message should contain '%s', got '%s'",
+			ErrAlreadySubmitted.Error(), errorMsg)
 	}
+	if !strings.Contains(errorMsg, firstSubmission.ID) {
+		t.Errorf("error message should contain submission ID '%s', got '%s'",
+			firstSubmission.ID, errorMsg)
+	}
+
+	t.Logf("Error message: %s", errorMsg)
 
 	if !errors.Is(err, ErrAlreadySubmitted) {
 		t.Error("expected error to wrap ErrAlreadySubmitted")

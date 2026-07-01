@@ -115,5 +115,6 @@ func isDateWithinDays(expiryDate, asOf time.Time, days int) bool {
 	expiryDateOnly := dateOnly(expiryDate)
 	asOfOnly := dateOnly(asOf)
 	cutoff := asOfOnly.AddDate(0, 0, days)
-	return expiryDateOnly.Before(cutoff) || expiryDateOnly.Equal(cutoff)
+	return (expiryDateOnly.After(asOfOnly) || expiryDateOnly.Equal(asOfOnly)) &&
+		(expiryDateOnly.Before(cutoff) || expiryDateOnly.Equal(cutoff))
 }

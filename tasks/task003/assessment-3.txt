@@ -1,0 +1,5 @@
+产物不满意：
+1. WithdrawPrescription 方法中空撤回原因的校验放在了处方存在性检查之前（service.go 第 219 行），当调用方同时传入不存在的处方 ID 和空原因时返回 `ErrWithdrawReasonRequired` 而非更根本的 `ErrPrescriptionNotFound`。调用方补充原因后重试才发现处方 ID 无效，浪费了一次请求修正。原因是模型只关注了"是否校验了原因为空"这件事本身，没有考虑多个校验条件之间的优先级。对照 ReviewPrescription 方法，驳回原因的空值校验是放在处方存在、状态一致性、药房归属全部校验之后才执行的，WithdrawPrescription 应将原因校验也后移到相同位置。
+过程不满意：
+1. 模型在 session-cot-3 中先后三次完整读取 service_test.go 文件。第一次读取看到了全部测试用例内容，但模型又进行了第二次和第三次完整读取，目的仅是"找到合适的插入位置"。既然第一次已经加载了完整文件，基于已知的 TestWithdrawPrescription_InvalidPrescription 函数位置直接在文件末尾前插入新测试即可，后两次文件读取属于明显冗余，反映出模型在已有足够上下文的情况下仍过度依赖工具调用来获取已经持有的信息。
+2. 模型在刚读取 service.go 和 models.go 后就接连两次调用 todo_write 创建了包含 5 项子任务的计划，两次调用操作同一批任务而非新增或细化。这表明模型在规划阶段有重复操作，且规划在前、深入分析代码在后，导致后续在重构 CreatePrescription 回滚逻辑时仍需多次分块读取 service.go 来重新理解代码细节。正确做法是先通读 CreatePrescription 的完整回滚链路，理清所有失败分支后再制定修改计划。

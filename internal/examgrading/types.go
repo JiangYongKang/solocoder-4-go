@@ -2,6 +2,7 @@ package examgrading
 
 import (
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -31,7 +32,7 @@ type DuplicateSubmissionError struct {
 }
 
 func (e *DuplicateSubmissionError) Error() string {
-	return ErrAlreadySubmitted.Error()
+	return fmt.Sprintf("%s; existing submission ID: %s", ErrAlreadySubmitted.Error(), e.ExistingSubmissionID)
 }
 
 func (e *DuplicateSubmissionError) Unwrap() error {

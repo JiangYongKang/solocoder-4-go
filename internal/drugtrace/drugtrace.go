@@ -120,7 +120,7 @@ func (s *DrugTraceService) GetExpiringBatches(days int) ([]*Batch, error) {
 
 	result := make([]*Batch, 0)
 	for _, batch := range s.batches {
-		if batch.Status == BatchStatusRecalled {
+		if batch.Status == BatchStatusRecalled || batch.Status == BatchStatusExpired {
 			continue
 		}
 		if isDateWithinDays(batch.ExpiryDate, now, days) {
@@ -231,11 +231,6 @@ func (s *DrugTraceService) OutboundFIFO(
 	for _, batch := range availableBatches {
 		if remainingQty <= 0 {
 			break
-		}
-
-		if isDateExpired(batch.ExpiryDate, now) {
-			batch.Status = BatchStatusExpired
-			continue
 		}
 
 		takeQty := batch.RemainingQty

@@ -247,6 +247,14 @@ submissionMap map[string]string  // key: studentID + "-" + examID, value: submis
 | `ErrStudentNotFound` | 学生不存在 | 交卷/申请复核时学生ID无效 |
 | `ErrTeacherNotFound` | 教师不存在 | 创建试卷/处理复核时教师ID无效 |
 | `ErrAlreadySubmitted` | 已提交过 | 同一考生对同一试卷重复提交 |
+| `ErrSubmissionNotFound` | 答卷不存在 | 查询/申请复核时答卷ID无效 |
+| `ErrReviewNotFound` | 复核记录不存在 | 查询/处理复核时记录ID无效 |
+| `ErrInvalidTimeRange` | 时间范围非法 | 创建试卷时开始时间≥结束时间 |
+| `ErrNoQuestions` | 无题目 | 创建试卷时空题目列表 |
+| `ErrInvalidAnswers` | 答案不完整 | 提交答卷时缺少部分题目的答案 |
+| `ErrReviewAlreadyProcessed` | 复核已处理 | 对已处理的复核记录重复处理 |
+| `ErrInvalidScore` | 分数非法 | 期望分数或调整分数超出范围 |
+| `ErrQuestionNotFound` | 题目不存在 | 试卷中找不到指定题目 |
 
 ### 7.2 自定义错误类型
 
@@ -263,9 +271,9 @@ type DuplicateSubmissionError struct {
 ```
 
 **特点：**
-- 实现了 `error` 接口，错误消息与 `ErrAlreadySubmitted` 一致
+- 实现了 `error` 接口，错误消息包含通用提示和已有提交记录 ID，格式为：`"student has already submitted this exam; existing submission ID: {ID}"`
 - 实现了 `Unwrap() error` 方法，支持 `errors.Is(err, ErrAlreadySubmitted)` 检查
-- 调用方可以通过类型断言获取已有提交记录的 ID，便于后续查询
+- 调用方可以直接从错误文本中看到已有提交记录的 ID，也可以通过类型断言获取结构化信息
 
 **使用示例：**
 
@@ -282,14 +290,6 @@ if err != nil {
     }
 }
 ```
-| `ErrSubmissionNotFound` | 答卷不存在 | 查询/申请复核时答卷ID无效 |
-| `ErrReviewNotFound` | 复核记录不存在 | 查询/处理复核时记录ID无效 |
-| `ErrInvalidTimeRange` | 时间范围非法 | 创建试卷时开始时间≥结束时间 |
-| `ErrNoQuestions` | 无题目 | 创建试卷时空题目列表 |
-| `ErrInvalidAnswers` | 答案不完整 | 提交答卷时缺少部分题目的答案 |
-| `ErrReviewAlreadyProcessed` | 复核已处理 | 对已处理的复核记录重复处理 |
-| `ErrInvalidScore` | 分数非法 | 期望分数或调整分数超出范围 |
-| `ErrQuestionNotFound` | 题目不存在 | 试卷中找不到指定题目 |
 
 ## 8. 使用示例
 

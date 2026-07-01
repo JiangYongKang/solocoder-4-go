@@ -48,6 +48,7 @@ type Patient struct {
 }
 
 type ScheduleSlot struct {
+	mu             sync.Mutex
 	ID             string
 	DoctorID       string
 	DoctorName     string

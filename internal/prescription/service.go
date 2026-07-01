@@ -12,6 +12,12 @@ func NewService(store *Store) *Service {
 	return &Service{store: store}
 }
 
+func (svc *Service) rollbackReservedStock(reservedStock map[string]int) {
+	for medID, qty := range reservedStock {
+		svc.store.releaseStock(medID, qty)
+	}
+}
+
 type CreatePrescriptionRequest struct {
 	DoctorID       string
 	PatientID      string
@@ -78,24 +84,18 @@ func (svc *Service) CreatePrescription(req *CreatePrescriptionRequest) (*Prescri
 
 	for _, item := range req.Items {
 		if item.Quantity <= 0 {
-			for medID, qty := range reservedStock {
-				svc.store.releaseStock(medID, qty)
-			}
+			svc.rollbackReservedStock(reservedStock)
 			return nil, ErrInvalidQuantity
 		}
 
 		medicine, exists := svc.store.medicines[item.MedicineID]
 		if !exists {
-			for medID, qty := range reservedStock {
-				svc.store.releaseStock(medID, qty)
-			}
+			svc.rollbackReservedStock(reservedStock)
 			return nil, ErrMedicineNotFound
 		}
 
 		if err := svc.store.reserveStock(medicine.ID, item.Quantity); err != nil {
-			for medID, qty := range reservedStock {
-				svc.store.releaseStock(medID, qty)
-			}
+			svc.rollbackReservedStock(reservedStock)
 			return nil, err
 		}
 
@@ -216,6 +216,10 @@ func (svc *Service) WithdrawPrescription(req *WithdrawRequest) (*Prescription, e
 	svc.store.mu.Lock()
 	defer svc.store.mu.Unlock()
 
+	if req.Reason == "" {
+		return nil, ErrWithdrawReasonRequired
+	}
+
 	prescription, exists := svc.store.prescriptions[req.PrescriptionID]
 	if !exists {
 		return nil, ErrPrescriptionNotFound
@@ -223,10 +227,6 @@ func (svc *Service) WithdrawPrescription(req *WithdrawRequest) (*Prescription, e
 
 	if prescription.Status != StatusPendingReview && prescription.Status != StatusApproved {
 		return nil, ErrCannotWithdraw
-	}
-
-	if req.Reason == "" {
-		req.Reason = "未提供撤回原因"
 	}
 
 	for medicineID, quantity := range prescription.ReservedStock {

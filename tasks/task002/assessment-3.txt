@@ -1,0 +1,7 @@
+产物不满意：
+1. matchPatientCondition 函数将空字符串条件等同于 "general" 处理，而 TransferBed 调用 findAvailableBeds 时只填充了 BedType 字段不传 PatientCondition，两者通过空字符串这一隐式约定耦合在一起。当 icu 患者执行转科操作且 TransferCriteria 中 TargetBedType 为空时，该患者可能从 ICU 被错误分配到普通病房或外科病房，因为转科流程完全没有携带患者的原始病情信息。根因是模型选择了对匹配函数打补丁添加空字符串兜底，而不是让 TransferBed 通过 GetPatient 查询患者实际条件并填入 AllocateCriteria。正确做法是在 TransferBed 或 TransferCriteria 中补充患者条件字段确保转科不丢失病情上下文。
+
+过程不满意：
+1. 模型在刚收到提示词后未经分析就直接用 todo_write 创建了 4 项子任务计划，之后才读取 allocator.go 分析代码。修复任务应先理解现有代码中重复筛选逻辑的具体位置和未知条件兜底的实际行为，理清 findAvailableBeds 和 matchPatientCondition 的调用关系以及 TransferBed 等所有调用方的影响面，再制定修改步骤。先列计划后看代码的顺序是错误的，与前两轮会话中已暴露的同类过程问题一致。
+
+2. 模型修改 matchPatientCondition 将末尾 return true 改为 return false 后，在阅读代码时发现 TransferBed 调用 findAvailableBeds 时未传 PatientCondition，若不做处理则转科功能会失败，于是又在匹配函数中添加了空字符串等同于 general 的处理分支。这是先改代码发现冲突再打补丁的试错模式，正确做法是在动手修改前先通过 Grep 全局搜索 findAvailableBeds 的所有调用点，逐一分析每个调用方对 PatientCondition 的需求差异，再从根因层面决定是让 TransferBed 补充患者条件还是调整匹配函数语义并同步更新所有调用方。

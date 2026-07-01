@@ -1576,3 +1576,250 @@ func TestGetClassSummary_WithLateAndEarlyLeave(t *testing.T) {
 		t.Errorf("expected at least 1 early leave in class summary, got %d", summary.EarlyLeaveCount)
 	}
 }
+
+func TestAttendanceRate_NotExceed100Percent(t *testing.T) {
+	service := setupTestService()
+	classID, studentID1 := setupClassWithStudents(t, service)
+	studentID2 := getFirstID(service, "student2")
+	studentID3 := getFirstID(service, "student3")
+	rule := createDefaultRule(t, service)
+
+	date1 := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	session1, err := service.CreateSession(classID, rule.ID, date1)
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	checkInTime1 := time.Date(2024, 6, 1, 8, 15, 0, 0, time.UTC)
+	checkOutTime1 := time.Date(2024, 6, 1, 17, 45, 0, 0, time.UTC)
+	_, err = service.CheckIn(&CheckInRequest{
+		StudentID: studentID1,
+		SessionID: session1.ID,
+		CheckTime: checkInTime1,
+	})
+	if err != nil {
+		t.Fatalf("CheckIn student1 failed: %v", err)
+	}
+	_, err = service.CheckOut(&CheckInRequest{
+		StudentID: studentID1,
+		SessionID: session1.ID,
+		CheckTime: checkOutTime1,
+	})
+	if err != nil {
+		t.Fatalf("CheckOut student1 failed: %v", err)
+	}
+
+	checkInTime2 := time.Date(2024, 6, 1, 8, 12, 0, 0, time.UTC)
+	checkOutTime2 := time.Date(2024, 6, 1, 17, 48, 0, 0, time.UTC)
+	_, err = service.CheckIn(&CheckInRequest{
+		StudentID: studentID2,
+		SessionID: session1.ID,
+		CheckTime: checkInTime2,
+	})
+	if err != nil {
+		t.Fatalf("CheckIn student2 failed: %v", err)
+	}
+	_, err = service.CheckOut(&CheckInRequest{
+		StudentID: studentID2,
+		SessionID: session1.ID,
+		CheckTime: checkOutTime2,
+	})
+	if err != nil {
+		t.Fatalf("CheckOut student2 failed: %v", err)
+	}
+
+	checkInTime3 := time.Date(2024, 6, 1, 8, 5, 0, 0, time.UTC)
+	checkOutTime3 := time.Date(2024, 6, 1, 17, 55, 0, 0, time.UTC)
+	_, err = service.CheckIn(&CheckInRequest{
+		StudentID: studentID3,
+		SessionID: session1.ID,
+		CheckTime: checkInTime3,
+	})
+	if err != nil {
+		t.Fatalf("CheckIn student3 failed: %v", err)
+	}
+	_, err = service.CheckOut(&CheckInRequest{
+		StudentID: studentID3,
+		SessionID: session1.ID,
+		CheckTime: checkOutTime3,
+	})
+	if err != nil {
+		t.Fatalf("CheckOut student3 failed: %v", err)
+	}
+
+	_, err = service.CalculateAttendance(session1.ID)
+	if err != nil {
+		t.Fatalf("CalculateAttendance failed: %v", err)
+	}
+
+	startDate := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	endDate := time.Date(2024, 6, 2, 0, 0, 0, 0, time.UTC)
+
+	summary, err := service.GetClassSummary(classID, startDate, endDate)
+	if err != nil {
+		t.Fatalf("GetClassSummary failed: %v", err)
+	}
+
+	if summary.AttendanceRate > 100.0 {
+		t.Errorf("attendance rate should not exceed 100%%, got %.2f%%", summary.AttendanceRate)
+	}
+
+	if summary.LateCount != 2 {
+		t.Errorf("expected 2 late counts, got %d", summary.LateCount)
+	}
+	if summary.EarlyLeaveCount != 2 {
+		t.Errorf("expected 2 early leave counts, got %d", summary.EarlyLeaveCount)
+	}
+	if summary.PresentCount != 1 {
+		t.Errorf("expected 1 present count, got %d", summary.PresentCount)
+	}
+}
+
+func TestAttendanceRate_SingleStudentMultipleSessions(t *testing.T) {
+	service := setupTestService()
+	classID, studentID := setupClassWithStudents(t, service)
+	rule := createDefaultRule(t, service)
+
+	date1 := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	date2 := time.Date(2024, 6, 2, 0, 0, 0, 0, time.UTC)
+	date3 := time.Date(2024, 6, 3, 0, 0, 0, 0, time.UTC)
+
+	session1, err := service.CreateSession(classID, rule.ID, date1)
+	if err != nil {
+		t.Fatalf("CreateSession 1 failed: %v", err)
+	}
+	session2, err := service.CreateSession(classID, rule.ID, date2)
+	if err != nil {
+		t.Fatalf("CreateSession 2 failed: %v", err)
+	}
+	session3, err := service.CreateSession(classID, rule.ID, date3)
+	if err != nil {
+		t.Fatalf("CreateSession 3 failed: %v", err)
+	}
+
+	checkInTime1 := time.Date(2024, 6, 1, 8, 15, 0, 0, time.UTC)
+	checkOutTime1 := time.Date(2024, 6, 1, 17, 45, 0, 0, time.UTC)
+	_, err = service.CheckIn(&CheckInRequest{
+		StudentID: studentID,
+		SessionID: session1.ID,
+		CheckTime: checkInTime1,
+	})
+	if err != nil {
+		t.Fatalf("CheckIn session1 failed: %v", err)
+	}
+	_, err = service.CheckOut(&CheckInRequest{
+		StudentID: studentID,
+		SessionID: session1.ID,
+		CheckTime: checkOutTime1,
+	})
+	if err != nil {
+		t.Fatalf("CheckOut session1 failed: %v", err)
+	}
+
+	checkInTime2 := time.Date(2024, 6, 2, 8, 5, 0, 0, time.UTC)
+	_, err = service.CheckIn(&CheckInRequest{
+		StudentID: studentID,
+		SessionID: session2.ID,
+		CheckTime: checkInTime2,
+	})
+	if err != nil {
+		t.Fatalf("CheckIn session2 failed: %v", err)
+	}
+
+	_, err = service.CalculateAttendance(session1.ID)
+	if err != nil {
+		t.Fatalf("CalculateAttendance 1 failed: %v", err)
+	}
+	_, err = service.CalculateAttendance(session2.ID)
+	if err != nil {
+		t.Fatalf("CalculateAttendance 2 failed: %v", err)
+	}
+	_, err = service.CalculateAttendance(session3.ID)
+	if err != nil {
+		t.Fatalf("CalculateAttendance 3 failed: %v", err)
+	}
+
+	startDate := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	endDate := time.Date(2024, 6, 4, 0, 0, 0, 0, time.UTC)
+
+	summary, err := service.GetStudentSummary(studentID, classID, startDate, endDate)
+	if err != nil {
+		t.Fatalf("GetStudentSummary failed: %v", err)
+	}
+
+	if summary.AttendanceRate > 100.0 {
+		t.Errorf("attendance rate should not exceed 100%%, got %.2f%%", summary.AttendanceRate)
+	}
+
+	expectedRate := float64(2) / float64(3) * 100
+	if summary.AttendanceRate != expectedRate {
+		t.Errorf("expected attendance rate %.2f%%, got %.2f%%", expectedRate, summary.AttendanceRate)
+	}
+}
+
+func TestAttendanceRate_AllStudentsLateAndEarlyLeave(t *testing.T) {
+	service := setupTestService()
+	classID, studentID1 := setupClassWithStudents(t, service)
+	studentID2 := getFirstID(service, "student2")
+	studentID3 := getFirstID(service, "student3")
+	rule := createDefaultRule(t, service)
+
+	date1 := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	session1, err := service.CreateSession(classID, rule.ID, date1)
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	students := []string{studentID1, studentID2, studentID3}
+	for _, sid := range students {
+		checkInTime := time.Date(2024, 6, 1, 8, 15, 0, 0, time.UTC)
+		checkOutTime := time.Date(2024, 6, 1, 17, 45, 0, 0, time.UTC)
+		_, err = service.CheckIn(&CheckInRequest{
+			StudentID: sid,
+			SessionID: session1.ID,
+			CheckTime: checkInTime,
+		})
+		if err != nil {
+			t.Fatalf("CheckIn for student %s failed: %v", sid, err)
+		}
+		_, err = service.CheckOut(&CheckInRequest{
+			StudentID: sid,
+			SessionID: session1.ID,
+			CheckTime: checkOutTime,
+		})
+		if err != nil {
+			t.Fatalf("CheckOut for student %s failed: %v", sid, err)
+		}
+	}
+
+	_, err = service.CalculateAttendance(session1.ID)
+	if err != nil {
+		t.Fatalf("CalculateAttendance failed: %v", err)
+	}
+
+	startDate := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	endDate := time.Date(2024, 6, 2, 0, 0, 0, 0, time.UTC)
+
+	summary, err := service.GetClassSummary(classID, startDate, endDate)
+	if err != nil {
+		t.Fatalf("GetClassSummary failed: %v", err)
+	}
+
+	if summary.AttendanceRate > 100.0 {
+		t.Errorf("attendance rate should not exceed 100%%, got %.2f%%", summary.AttendanceRate)
+	}
+
+	if summary.AttendanceRate != 100.0 {
+		t.Errorf("expected 100%% attendance rate, got %.2f%%", summary.AttendanceRate)
+	}
+
+	if summary.LateCount != 3 {
+		t.Errorf("expected 3 late counts, got %d", summary.LateCount)
+	}
+	if summary.EarlyLeaveCount != 3 {
+		t.Errorf("expected 3 early leave counts, got %d", summary.EarlyLeaveCount)
+	}
+	if summary.PresentCount != 0 {
+		t.Errorf("expected 0 present count, got %d", summary.PresentCount)
+	}
+}

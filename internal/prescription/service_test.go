@@ -967,6 +967,234 @@ func TestWithdrawPrescription_InvalidPrescription(t *testing.T) {
 	}
 }
 
+func TestWithdrawPrescription_EmptyReason(t *testing.T) {
+	ctx := setupTestStore()
+	store := ctx.Store
+	svc := ctx.Service
+
+	createReq := &CreatePrescriptionRequest{
+		DoctorID:   ctx.DoctorID,
+		PatientID:  ctx.PatientID,
+		PharmacyID: ctx.PharmacyID,
+		Items: []MedicineItemRequest{
+			{MedicineID: ctx.Med1ID, Quantity: 3},
+		},
+	}
+
+	prescription, err := svc.CreatePrescription(createReq)
+	if err != nil {
+		t.Fatalf("CreatePrescription failed: %v", err)
+	}
+
+	invBefore, _ := store.GetInventory(ctx.Med1ID)
+	if invBefore.Reserved != 3 {
+		t.Errorf("expected reserved 3 before withdraw, got %d", invBefore.Reserved)
+	}
+
+	withdrawReq := &WithdrawRequest{
+		PrescriptionID: prescription.ID,
+		Reason:         "",
+	}
+
+	result, err := svc.WithdrawPrescription(withdrawReq)
+	if err != ErrWithdrawReasonRequired {
+		t.Errorf("expected ErrWithdrawReasonRequired, got %v", err)
+	}
+	if result != nil {
+		t.Error("expected result to be nil when error occurs")
+	}
+
+	updatedPrescription, _ := svc.GetPrescription(prescription.ID)
+	if updatedPrescription.Status != StatusPendingReview {
+		t.Errorf("prescription status should remain PENDING_REVIEW, got %v", updatedPrescription.Status)
+	}
+	if updatedPrescription.WithdrawnReason != "" {
+		t.Errorf("withdrawn reason should remain empty, got '%s'", updatedPrescription.WithdrawnReason)
+	}
+	if updatedPrescription.WithdrawnAt != nil {
+		t.Error("withdrawn at should remain nil")
+	}
+
+	invAfter, _ := store.GetInventory(ctx.Med1ID)
+	if invAfter.Reserved != 3 {
+		t.Errorf("reserved should remain 3 after failed withdrawal, got %d", invAfter.Reserved)
+	}
+	if invAfter.Quantity != 100 {
+		t.Errorf("quantity should remain 100, got %d", invAfter.Quantity)
+	}
+}
+
+func TestWithdrawPrescription_EmptyReasonFromApproved(t *testing.T) {
+	ctx := setupTestStore()
+	store := ctx.Store
+	svc := ctx.Service
+
+	createReq := &CreatePrescriptionRequest{
+		DoctorID:   ctx.DoctorID,
+		PatientID:  ctx.PatientID,
+		PharmacyID: ctx.PharmacyID,
+		Items: []MedicineItemRequest{
+			{MedicineID: ctx.Med1ID, Quantity: 4},
+			{MedicineID: ctx.Med2ID, Quantity: 2},
+		},
+	}
+
+	prescription, err := svc.CreatePrescription(createReq)
+	if err != nil {
+		t.Fatalf("CreatePrescription failed: %v", err)
+	}
+
+	reviewReq := &ReviewRequest{
+		PrescriptionID: prescription.ID,
+		PharmacyID:     ctx.PharmacyID,
+		Approved:       true,
+		ReviewedBy:     "药师",
+	}
+	svc.ReviewPrescription(reviewReq)
+
+	invMed1Before, _ := store.GetInventory(ctx.Med1ID)
+	invMed2Before, _ := store.GetInventory(ctx.Med2ID)
+	if invMed1Before.Reserved != 4 {
+		t.Errorf("expected med1 reserved 4, got %d", invMed1Before.Reserved)
+	}
+	if invMed2Before.Reserved != 2 {
+		t.Errorf("expected med2 reserved 2, got %d", invMed2Before.Reserved)
+	}
+
+	withdrawReq := &WithdrawRequest{
+		PrescriptionID: prescription.ID,
+		Reason:         "",
+	}
+
+	result, err := svc.WithdrawPrescription(withdrawReq)
+	if err != ErrWithdrawReasonRequired {
+		t.Errorf("expected ErrWithdrawReasonRequired, got %v", err)
+	}
+	if result != nil {
+		t.Error("expected result to be nil when error occurs")
+	}
+
+	updatedPrescription, _ := svc.GetPrescription(prescription.ID)
+	if updatedPrescription.Status != StatusApproved {
+		t.Errorf("prescription status should remain APPROVED, got %v", updatedPrescription.Status)
+	}
+
+	invMed1After, _ := store.GetInventory(ctx.Med1ID)
+	invMed2After, _ := store.GetInventory(ctx.Med2ID)
+	if invMed1After.Reserved != 4 {
+		t.Errorf("med1 reserved should remain 4, got %d", invMed1After.Reserved)
+	}
+	if invMed2After.Reserved != 2 {
+		t.Errorf("med2 reserved should remain 2, got %d", invMed2After.Reserved)
+	}
+	if invMed1After.Quantity != 100 {
+		t.Errorf("med1 quantity should remain 100, got %d", invMed1After.Quantity)
+	}
+	if invMed2After.Quantity != 50 {
+		t.Errorf("med2 quantity should remain 50, got %d", invMed2After.Quantity)
+	}
+}
+
+func TestCreatePrescription_RollbackOnInvalidQuantity(t *testing.T) {
+	ctx := setupTestStore()
+	store := ctx.Store
+	svc := ctx.Service
+
+	createReq := &CreatePrescriptionRequest{
+		DoctorID:   ctx.DoctorID,
+		PatientID:  ctx.PatientID,
+		PharmacyID: ctx.PharmacyID,
+		Items: []MedicineItemRequest{
+			{MedicineID: ctx.Med1ID, Quantity: 2},
+			{MedicineID: ctx.Med2ID, Quantity: 0},
+		},
+	}
+
+	_, err := svc.CreatePrescription(createReq)
+	if err != ErrInvalidQuantity {
+		t.Errorf("expected ErrInvalidQuantity, got %v", err)
+	}
+
+	invMed1, _ := store.GetInventory(ctx.Med1ID)
+	if invMed1.Reserved != 0 {
+		t.Errorf("med1 reserved should be rolled back to 0, got %d", invMed1.Reserved)
+	}
+	if invMed1.Quantity != 100 {
+		t.Errorf("med1 quantity should remain 100, got %d", invMed1.Quantity)
+	}
+
+	invMed2, _ := store.GetInventory(ctx.Med2ID)
+	if invMed2.Reserved != 0 {
+		t.Errorf("med2 reserved should be 0, got %d", invMed2.Reserved)
+	}
+}
+
+func TestCreatePrescription_RollbackOnInvalidMedicine(t *testing.T) {
+	ctx := setupTestStore()
+	store := ctx.Store
+	svc := ctx.Service
+
+	createReq := &CreatePrescriptionRequest{
+		DoctorID:   ctx.DoctorID,
+		PatientID:  ctx.PatientID,
+		PharmacyID: ctx.PharmacyID,
+		Items: []MedicineItemRequest{
+			{MedicineID: ctx.Med1ID, Quantity: 3},
+			{MedicineID: "INVALID_MED", Quantity: 1},
+		},
+	}
+
+	_, err := svc.CreatePrescription(createReq)
+	if err != ErrMedicineNotFound {
+		t.Errorf("expected ErrMedicineNotFound, got %v", err)
+	}
+
+	invMed1, _ := store.GetInventory(ctx.Med1ID)
+	if invMed1.Reserved != 0 {
+		t.Errorf("med1 reserved should be rolled back to 0, got %d", invMed1.Reserved)
+	}
+	if invMed1.Quantity != 100 {
+		t.Errorf("med1 quantity should remain 100, got %d", invMed1.Quantity)
+	}
+}
+
+func TestCreatePrescription_RollbackOnInsufficientStock(t *testing.T) {
+	ctx := setupTestStore()
+	store := ctx.Store
+	svc := ctx.Service
+
+	createReq := &CreatePrescriptionRequest{
+		DoctorID:   ctx.DoctorID,
+		PatientID:  ctx.PatientID,
+		PharmacyID: ctx.PharmacyID,
+		Items: []MedicineItemRequest{
+			{MedicineID: ctx.Med1ID, Quantity: 5},
+			{MedicineID: ctx.Med2ID, Quantity: 999},
+		},
+	}
+
+	_, err := svc.CreatePrescription(createReq)
+	if err != ErrInsufficientStock {
+		t.Errorf("expected ErrInsufficientStock, got %v", err)
+	}
+
+	invMed1, _ := store.GetInventory(ctx.Med1ID)
+	if invMed1.Reserved != 0 {
+		t.Errorf("med1 reserved should be rolled back to 0, got %d", invMed1.Reserved)
+	}
+	if invMed1.Quantity != 100 {
+		t.Errorf("med1 quantity should remain 100, got %d", invMed1.Quantity)
+	}
+
+	invMed2, _ := store.GetInventory(ctx.Med2ID)
+	if invMed2.Reserved != 0 {
+		t.Errorf("med2 reserved should be 0, got %d", invMed2.Reserved)
+	}
+	if invMed2.Quantity != 50 {
+		t.Errorf("med2 quantity should remain 50, got %d", invMed2.Quantity)
+	}
+}
+
 func TestFullWorkflow(t *testing.T) {
 	ctx := setupTestStore()
 	store := ctx.Store

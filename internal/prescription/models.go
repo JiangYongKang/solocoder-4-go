@@ -98,19 +98,20 @@ type Prescription struct {
 }
 
 var (
-	ErrDoctorNotFound       = errors.New("doctor not found")
-	ErrPatientNotFound      = errors.New("patient not found")
-	ErrPharmacyNotFound     = errors.New("pharmacy not found")
-	ErrMedicineNotFound     = errors.New("medicine not found")
-	ErrPrescriptionNotFound = errors.New("prescription not found")
-	ErrInsufficientStock    = errors.New("insufficient inventory stock")
-	ErrInvalidStatus        = errors.New("invalid prescription status")
-	ErrAlreadyDispensed     = errors.New("prescription already dispensed")
-	ErrNoItems              = errors.New("prescription must contain at least one medicine item")
-	ErrInvalidQuantity      = errors.New("invalid medicine quantity, must be greater than 0")
-	ErrNotApproved          = errors.New("prescription is not approved")
-	ErrCannotWithdraw       = errors.New("prescription cannot be withdrawn in current status")
-	ErrRejectReasonRequired = errors.New("reject reason is required when rejecting a prescription")
+	ErrDoctorNotFound        = errors.New("doctor not found")
+	ErrPatientNotFound       = errors.New("patient not found")
+	ErrPharmacyNotFound      = errors.New("pharmacy not found")
+	ErrMedicineNotFound      = errors.New("medicine not found")
+	ErrPrescriptionNotFound  = errors.New("prescription not found")
+	ErrInsufficientStock     = errors.New("insufficient inventory stock")
+	ErrInvalidStatus         = errors.New("invalid prescription status")
+	ErrAlreadyDispensed      = errors.New("prescription already dispensed")
+	ErrNoItems               = errors.New("prescription must contain at least one medicine item")
+	ErrInvalidQuantity       = errors.New("invalid medicine quantity, must be greater than 0")
+	ErrNotApproved           = errors.New("prescription is not approved")
+	ErrCannotWithdraw        = errors.New("prescription cannot be withdrawn in current status")
+	ErrRejectReasonRequired  = errors.New("reject reason is required when rejecting a prescription")
+	ErrWithdrawReasonRequired = errors.New("withdraw reason is required when withdrawing a prescription")
 )
 
 type Store struct {

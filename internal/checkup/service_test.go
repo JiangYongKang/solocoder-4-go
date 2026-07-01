@@ -1909,3 +1909,168 @@ func TestFullWorkflow_ZeroReferenceRange(t *testing.T) {
 		t.Error("expected 舒张压 to be normal")
 	}
 }
+
+func TestRecordResult_NonNumeric_ReferenceEmpty(t *testing.T) {
+	store := setupTestStore()
+	patientID := getFirstPatientID(store)
+	itemChest := getItemIDByName(store, "胸部X光")
+	itemECG := getItemIDByName(store, "心电图")
+	pkg, _ := store.CreatePackage(&CreatePackageRequest{
+		Name:    "影像检查套餐",
+		ItemIDs: []string{itemChest, itemECG},
+	})
+	date := time.Date(2026, 7, 1, 0, 0, 0, 0, time.Local)
+	start := time.Date(2026, 7, 1, 8, 0, 0, 0, time.Local)
+	end := time.Date(2026, 7, 1, 10, 0, 0, 0, time.Local)
+	slot, _ := store.CreateTimeSlot(&CreateTimeSlotRequest{
+		Date:      date,
+		StartTime: start,
+		EndTime:   end,
+		Capacity:  10,
+	})
+	appt, _ := store.CreateAppointment(&CreateAppointmentRequest{
+		PatientID:  patientID,
+		PackageID:  pkg.ID,
+		TimeSlotID: slot.ID,
+	})
+
+	result, err := store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt.ID,
+		ItemID:        itemChest,
+		Value:         "双肺纹理清晰，未见实质性病变",
+		Remarks:       "心肺正常，建议每年复查",
+	})
+	if err != nil {
+		t.Fatalf("RecordResult failed: %v", err)
+	}
+	if result.IsNumeric {
+		t.Error("expected result to be non-numeric")
+	}
+	if result.NumericValue != 0 {
+		t.Errorf("expected numeric value 0 for non-numeric, got %v", result.NumericValue)
+	}
+	if result.IsAbnormal {
+		t.Error("expected non-numeric result not to be auto-flagged abnormal")
+	}
+	if result.Reference != "" {
+		t.Errorf("expected reference to be empty for non-numeric result, got '%s'", result.Reference)
+	}
+	if result.Remarks != "心肺正常，建议每年复查" {
+		t.Errorf("expected remarks preserved, got '%s'", result.Remarks)
+	}
+}
+
+func TestRecordResult_NonNumeric_ECG_WithRemarks(t *testing.T) {
+	store := setupTestStore()
+	patientID := getFirstPatientID(store)
+	itemChest := getItemIDByName(store, "胸部X光")
+	itemECG := getItemIDByName(store, "心电图")
+	pkg, _ := store.CreatePackage(&CreatePackageRequest{
+		Name:    "影像检查套餐",
+		ItemIDs: []string{itemChest, itemECG},
+	})
+	date := time.Date(2026, 7, 1, 0, 0, 0, 0, time.Local)
+	start := time.Date(2026, 7, 1, 8, 0, 0, 0, time.Local)
+	end := time.Date(2026, 7, 1, 10, 0, 0, 0, time.Local)
+	slot, _ := store.CreateTimeSlot(&CreateTimeSlotRequest{
+		Date:      date,
+		StartTime: start,
+		EndTime:   end,
+		Capacity:  10,
+	})
+	appt, _ := store.CreateAppointment(&CreateAppointmentRequest{
+		PatientID:  patientID,
+		PackageID:  pkg.ID,
+		TimeSlotID: slot.ID,
+	})
+
+	result, err := store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt.ID,
+		ItemID:        itemECG,
+		Value:         "窦性心律不齐",
+		Remarks:       "轻度不齐，建议进一步做动态心电图",
+	})
+	if err != nil {
+		t.Fatalf("RecordResult failed: %v", err)
+	}
+	if result.IsNumeric {
+		t.Error("expected ECG result to be non-numeric")
+	}
+	if result.IsAbnormal {
+		t.Error("expected non-numeric ECG not to be auto-flagged abnormal")
+	}
+	if result.Reference != "" {
+		t.Errorf("expected reference to be empty for non-numeric, got '%s'", result.Reference)
+	}
+	if result.Value != "窦性心律不齐" {
+		t.Errorf("expected value preserved, got '%s'", result.Value)
+	}
+	if result.Remarks != "轻度不齐，建议进一步做动态心电图" {
+		t.Errorf("expected remarks preserved, got '%s'", result.Remarks)
+	}
+}
+
+func TestRecordResult_NonNumericAndNumeric_MixedReport(t *testing.T) {
+	store := setupTestStore()
+	patientID := getFirstPatientID(store)
+	itemWBC := getItemIDByName(store, "血常规-白细胞计数")
+	itemChest := getItemIDByName(store, "胸部X光")
+	pkg, _ := store.CreatePackage(&CreatePackageRequest{
+		Name:    "基础检查套餐",
+		ItemIDs: []string{itemWBC, itemChest},
+	})
+	date := time.Date(2026, 7, 15, 0, 0, 0, 0, time.Local)
+	start := time.Date(2026, 7, 15, 8, 0, 0, 0, time.Local)
+	end := time.Date(2026, 7, 15, 12, 0, 0, 0, time.Local)
+	slot, _ := store.CreateTimeSlot(&CreateTimeSlotRequest{
+		Date:      date,
+		StartTime: start,
+		EndTime:   end,
+		Capacity:  50,
+	})
+	appt, _ := store.CreateAppointment(&CreateAppointmentRequest{
+		PatientID:  patientID,
+		PackageID:  pkg.ID,
+		TimeSlotID: slot.ID,
+	})
+
+	store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt.ID,
+		ItemID:        itemWBC,
+		Value:         "15.0",
+		Remarks:       "偏高",
+	})
+	store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt.ID,
+		ItemID:        itemChest,
+		Value:         "未见异常",
+		Remarks:       "心肺正常",
+	})
+
+	report, err := store.GenerateReport(&GenerateReportRequest{
+		AppointmentID: appt.ID,
+	})
+	if err != nil {
+		t.Fatalf("GenerateReport failed: %v", err)
+	}
+	if len(report.Results) != 2 {
+		t.Errorf("expected 2 results in report, got %d", len(report.Results))
+	}
+	if len(report.AbnormalItems) != 1 {
+		t.Errorf("expected 1 abnormal item (WBC numeric), got %d", len(report.AbnormalItems))
+	}
+
+	chestResult := report.Results[itemChest]
+	if chestResult == nil {
+		t.Fatal("chest x-ray result should exist in report")
+	}
+	if chestResult.IsNumeric {
+		t.Error("chest x-ray result should be non-numeric")
+	}
+	if chestResult.Reference != "" {
+		t.Errorf("expected chest x-ray reference empty, got '%s'", chestResult.Reference)
+	}
+	if chestResult.Remarks != "心肺正常" {
+		t.Errorf("expected chest x-ray remarks preserved, got '%s'", chestResult.Remarks)
+	}
+}
