@@ -1,0 +1,4 @@
+你实现的远程问诊会话模块存在以下问题需要修复：
+1. SendMessage 方法中对消息发送者类型的校验，switch 分支的 default 返回了 `ErrNotPatient`。当 SenderType 是一个非 Patient 也非 Doctor 的值时（如 System 类型或其他扩展类型），返回"不是患者"的错误在语义上是错误的，会误导上层调用方。需要定义一个语义准确的错误类型来处理未识别的发送者类型。
+2. SendFollowUp 方法中在归档记录上追加追问消息后，会尝试将消息同步写入原始会话 session.Messages。当前逻辑用 `if sessionExists` 做保护，但如果原始会话在 CompleteSession 之后被删除（虽然当前实现不删除），或者后续新增了会话清理逻辑，这里的追加操作存在空指针风险。另外追问消息本质上是归档后的追加操作，不应再影响已结束的原始会话。需要去掉将追问消息同步写回 session 的逻辑，追问消息只保留在归档记录中。
+3. 运行 go test ./internal/teleconsult/ -v，需要让所有测试通过。

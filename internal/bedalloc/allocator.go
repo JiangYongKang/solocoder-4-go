@@ -167,20 +167,28 @@ func (ba *BedAllocator) findAvailableBeds(ward *Ward, criteria AllocateCriteria)
 }
 
 func (ba *BedAllocator) matchPatientCondition(bed *Bed, criteria AllocateCriteria) bool {
-	if criteria.PatientAge < 14 && bed.Type != BedTypePediatric && criteria.BedType == "" {
-		return false
+	if criteria.BedType != "" {
+		return bed.Type == criteria.BedType
 	}
 
-	if criteria.PatientCondition == "icu" && bed.Type != BedTypeICU {
-		return false
+	if criteria.PatientCondition == "infectious" {
+		return bed.Type == BedTypeIsolation
 	}
 
-	if criteria.PatientCondition == "infectious" && bed.Type != BedTypeIsolation {
-		return false
+	if criteria.PatientCondition == "icu" {
+		return bed.Type == BedTypeICU
 	}
 
-	if criteria.PatientCondition == "surgery" && bed.Type != BedTypeSurgery && bed.Type != BedTypeGeneral {
-		return false
+	if criteria.PatientAge < 14 && criteria.PatientCondition == "general" {
+		return bed.Type == BedTypePediatric
+	}
+
+	if criteria.PatientCondition == "surgery" {
+		return bed.Type == BedTypeSurgery || bed.Type == BedTypeICU || bed.Type == BedTypeGeneral
+	}
+
+	if criteria.PatientCondition == "general" {
+		return bed.Type == BedTypeGeneral || bed.Type == BedTypeSurgery
 	}
 
 	return true

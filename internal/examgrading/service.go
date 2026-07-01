@@ -166,8 +166,12 @@ func (s *Store) SubmitExam(req *SubmitExamRequest) (*ExamSubmission, error) {
 	}
 
 	submissionKey := req.StudentID + "-" + req.ExamID
-	if _, exists := s.submissionMap[submissionKey]; exists {
-		return nil, ErrAlreadySubmitted
+	if existingSubmissionID, exists := s.submissionMap[submissionKey]; exists {
+		return nil, &DuplicateSubmissionError{
+			ExistingSubmissionID: existingSubmissionID,
+			StudentID:            req.StudentID,
+			ExamID:               req.ExamID,
+		}
 	}
 
 	answerMap := make(map[string]interface{})
@@ -238,11 +242,16 @@ func compareMultipleChoiceAnswers(correct, student interface{}) bool {
 		return false
 	}
 
-	sort.Strings(correctSlice)
-	sort.Strings(studentSlice)
+	correctCopy := make([]string, len(correctSlice))
+	copy(correctCopy, correctSlice)
+	studentCopy := make([]string, len(studentSlice))
+	copy(studentCopy, studentSlice)
 
-	for i := range correctSlice {
-		if correctSlice[i] != studentSlice[i] {
+	sort.Strings(correctCopy)
+	sort.Strings(studentCopy)
+
+	for i := range correctCopy {
+		if correctCopy[i] != studentCopy[i] {
 			return false
 		}
 	}

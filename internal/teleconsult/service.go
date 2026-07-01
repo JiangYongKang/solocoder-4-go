@@ -279,7 +279,7 @@ func (s *Service) SendMessage(req *SendMessageRequest) (*Message, error) {
 			return nil, ErrSessionNotAccepted
 		}
 	default:
-		return nil, ErrNotPatient
+		return nil, ErrInvalidSenderType
 	}
 
 	now := time.Now()
@@ -400,13 +400,6 @@ func (s *Service) SendFollowUp(req *SendFollowUpRequest) (*Message, error) {
 
 	archive.Messages = append(archive.Messages, msg)
 	archive.FollowUpCount++
-
-	session, sessionExists := s.sessions[archive.SessionID]
-	if sessionExists {
-		session.Messages = append(session.Messages, msg)
-		session.FollowUpCount = archive.FollowUpCount
-		session.LastMessageAt = now
-	}
 
 	return msg, nil
 }

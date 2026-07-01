@@ -607,6 +607,41 @@ func TestSendMessage_ClosedSession(t *testing.T) {
 	}
 }
 
+func TestSendMessage_InvalidSenderType(t *testing.T) {
+	svc, patientID, doctorID := setupTestService()
+	session, _ := svc.CreateSession(&CreateSessionRequest{
+		PatientID:      patientID,
+		DoctorID:       doctorID,
+		ChiefComplaint: "头痛",
+	})
+	_, _ = svc.AcceptSession(&AcceptSessionRequest{
+		SessionID: session.ID,
+		DoctorID:  doctorID,
+	})
+
+	_, err := svc.SendMessage(&SendMessageRequest{
+		SessionID:   session.ID,
+		SenderID:    "SYSTEM",
+		SenderType:  MessageSenderSystem,
+		MessageType: MessageTypeText,
+		Content:     "系统消息",
+	})
+	if err != ErrInvalidSenderType {
+		t.Errorf("expected ErrInvalidSenderType for SYSTEM sender, got %v", err)
+	}
+
+	_, err = svc.SendMessage(&SendMessageRequest{
+		SessionID:   session.ID,
+		SenderID:    patientID,
+		SenderType:  "UNKNOWN_TYPE",
+		MessageType: MessageTypeText,
+		Content:     "测试未知发送者",
+	})
+	if err != ErrInvalidSenderType {
+		t.Errorf("expected ErrInvalidSenderType for UNKNOWN sender type, got %v", err)
+	}
+}
+
 func TestSendMessage_MessagesOrdered(t *testing.T) {
 	svc, patientID, doctorID := setupTestService()
 	session, _ := svc.CreateSession(&CreateSessionRequest{
@@ -1151,7 +1186,7 @@ func TestSendFollowUp_ImageSuccess(t *testing.T) {
 	}
 }
 
-func TestSendFollowUp_UpdatesSessionMessages(t *testing.T) {
+func TestSendFollowUp_DoesNotUpdateOriginalSession(t *testing.T) {
 	svc, patientID, doctorID := setupTestService()
 
 	session, _ := svc.CreateSession(&CreateSessionRequest{
@@ -1173,20 +1208,35 @@ func TestSendFollowUp_UpdatesSessionMessages(t *testing.T) {
 
 	sessionBefore, _ := svc.GetSession(session.ID)
 	msgCountBefore := len(sessionBefore.Messages)
+	followUpCountBefore := sessionBefore.FollowUpCount
 
-	_, _ = svc.SendFollowUp(&SendFollowUpRequest{
+	archiveBefore, _ := svc.GetArchive(archive.ID)
+	archiveMsgCountBefore := len(archiveBefore.Messages)
+
+	_, err := svc.SendFollowUp(&SendFollowUpRequest{
 		ArchiveID:   archive.ID,
 		PatientID:   patientID,
 		MessageType: MessageTypeText,
 		Content:     "追问一下",
 	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	sessionAfter, _ := svc.GetSession(session.ID)
-	if len(sessionAfter.Messages) != msgCountBefore+1 {
-		t.Errorf("expected %d messages in session, got %d", msgCountBefore+1, len(sessionAfter.Messages))
+	if len(sessionAfter.Messages) != msgCountBefore {
+		t.Errorf("expected session message count unchanged (%d), got %d — follow-up should not modify original session", msgCountBefore, len(sessionAfter.Messages))
 	}
-	if sessionAfter.FollowUpCount != 1 {
-		t.Errorf("expected session follow-up count 1, got %d", sessionAfter.FollowUpCount)
+	if sessionAfter.FollowUpCount != followUpCountBefore {
+		t.Errorf("expected session follow-up count unchanged (%d), got %d — follow-up should not modify original session", followUpCountBefore, sessionAfter.FollowUpCount)
+	}
+
+	archiveAfter, _ := svc.GetArchive(archive.ID)
+	if len(archiveAfter.Messages) != archiveMsgCountBefore+1 {
+		t.Errorf("expected archive message count %d, got %d", archiveMsgCountBefore+1, len(archiveAfter.Messages))
+	}
+	if archiveAfter.FollowUpCount != 1 {
+		t.Errorf("expected archive follow-up count 1, got %d", archiveAfter.FollowUpCount)
 	}
 }
 

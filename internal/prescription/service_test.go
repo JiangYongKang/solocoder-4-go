@@ -403,6 +403,7 @@ func TestReviewPrescription_Rejected(t *testing.T) {
 
 func TestReviewPrescription_RejectedWithoutReason(t *testing.T) {
 	ctx := setupTestStore()
+	store := ctx.Store
 	svc := ctx.Service
 
 	createReq := &CreatePrescriptionRequest{
@@ -416,6 +417,11 @@ func TestReviewPrescription_RejectedWithoutReason(t *testing.T) {
 
 	prescription, _ := svc.CreatePrescription(createReq)
 
+	invBefore, _ := store.GetInventory(ctx.Med1ID)
+	if invBefore.Reserved != 1 {
+		t.Errorf("expected reserved 1 before review, got %d", invBefore.Reserved)
+	}
+
 	reviewReq := &ReviewRequest{
 		PrescriptionID: prescription.ID,
 		PharmacyID:     ctx.PharmacyID,
@@ -424,9 +430,94 @@ func TestReviewPrescription_RejectedWithoutReason(t *testing.T) {
 		ReviewedBy:     "药师",
 	}
 
-	reviewed, _ := svc.ReviewPrescription(reviewReq)
-	if reviewed.RejectReason == "" {
-		t.Error("reject reason should not be empty when not provided")
+	_, err := svc.ReviewPrescription(reviewReq)
+	if err != ErrRejectReasonRequired {
+		t.Errorf("expected ErrRejectReasonRequired, got %v", err)
+	}
+
+	updated, _ := svc.GetPrescription(prescription.ID)
+	if updated.Status != StatusPendingReview {
+		t.Errorf("expected status to remain PENDING_REVIEW, got %v", updated.Status)
+	}
+
+	invAfter, _ := store.GetInventory(ctx.Med1ID)
+	if invAfter.Reserved != 1 {
+		t.Errorf("expected reserved 1 after failed rejection, got %d", invAfter.Reserved)
+	}
+}
+
+func TestReviewPrescription_RejectedWithEmptyReason_ReturnsError(t *testing.T) {
+	ctx := setupTestStore()
+	store := ctx.Store
+	svc := ctx.Service
+
+	createReq := &CreatePrescriptionRequest{
+		DoctorID:   ctx.DoctorID,
+		PatientID:  ctx.PatientID,
+		PharmacyID: ctx.PharmacyID,
+		Items: []MedicineItemRequest{
+			{MedicineID: ctx.Med1ID, Quantity: 5},
+			{MedicineID: ctx.Med2ID, Quantity: 3},
+		},
+	}
+
+	prescription, err := svc.CreatePrescription(createReq)
+	if err != nil {
+		t.Fatalf("CreatePrescription failed: %v", err)
+	}
+
+	invMed1Before, _ := store.GetInventory(ctx.Med1ID)
+	invMed2Before, _ := store.GetInventory(ctx.Med2ID)
+	if invMed1Before.Reserved != 5 {
+		t.Errorf("expected med1 reserved 5, got %d", invMed1Before.Reserved)
+	}
+	if invMed2Before.Reserved != 3 {
+		t.Errorf("expected med2 reserved 3, got %d", invMed2Before.Reserved)
+	}
+
+	reviewReq := &ReviewRequest{
+		PrescriptionID: prescription.ID,
+		PharmacyID:     ctx.PharmacyID,
+		Approved:       false,
+		RejectReason:   "",
+		ReviewedBy:     "审核药师",
+	}
+
+	result, err := svc.ReviewPrescription(reviewReq)
+	if err != ErrRejectReasonRequired {
+		t.Errorf("expected ErrRejectReasonRequired, got %v", err)
+	}
+	if result != nil {
+		t.Error("expected result to be nil when error occurs")
+	}
+
+	updatedPrescription, _ := svc.GetPrescription(prescription.ID)
+	if updatedPrescription.Status != StatusPendingReview {
+		t.Errorf("prescription status should remain PENDING_REVIEW, got %v", updatedPrescription.Status)
+	}
+	if updatedPrescription.RejectReason != "" {
+		t.Errorf("reject reason should remain empty, got '%s'", updatedPrescription.RejectReason)
+	}
+	if updatedPrescription.ReviewedAt != nil {
+		t.Error("reviewed at should remain nil")
+	}
+	if updatedPrescription.ReviewedBy != "" {
+		t.Errorf("reviewed by should remain empty, got '%s'", updatedPrescription.ReviewedBy)
+	}
+
+	invMed1After, _ := store.GetInventory(ctx.Med1ID)
+	invMed2After, _ := store.GetInventory(ctx.Med2ID)
+	if invMed1After.Reserved != 5 {
+		t.Errorf("med1 reserved should remain 5, got %d", invMed1After.Reserved)
+	}
+	if invMed2After.Reserved != 3 {
+		t.Errorf("med2 reserved should remain 3, got %d", invMed2After.Reserved)
+	}
+	if invMed1After.Quantity != 100 {
+		t.Errorf("med1 quantity should remain 100, got %d", invMed1After.Quantity)
+	}
+	if invMed2After.Quantity != 50 {
+		t.Errorf("med2 quantity should remain 50, got %d", invMed2After.Quantity)
 	}
 }
 

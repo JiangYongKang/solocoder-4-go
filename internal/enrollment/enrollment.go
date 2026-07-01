@@ -92,9 +92,14 @@ func (s *Store) processWaitlist(courseID string) (*Enrollment, error) {
 	}
 
 	course, _ := s.courses[courseID]
-	for len(waitlist) > 0 {
+	totalStudents := len(waitlist)
+	processedCount := 0
+
+	for processedCount < totalStudents {
 		entry := waitlist[0]
 		student, exists := s.students[entry.StudentID]
+		processedCount++
+
 		if !exists {
 			s.waitlists[courseID] = waitlist[1:]
 			waitlist = s.waitlists[courseID]
@@ -102,14 +107,14 @@ func (s *Store) processWaitlist(courseID string) (*Enrollment, error) {
 		}
 
 		if !s.checkPrerequisites(student, course) {
-			s.waitlists[courseID] = waitlist[1:]
+			s.waitlists[courseID] = append(waitlist[1:], entry)
 			waitlist = s.waitlists[courseID]
 			continue
 		}
 
 		enrolledCredits := s.getEnrolledCredits(student.ID)
 		if enrolledCredits+course.Credits > student.MaxCredits {
-			s.waitlists[courseID] = waitlist[1:]
+			s.waitlists[courseID] = append(waitlist[1:], entry)
 			waitlist = s.waitlists[courseID]
 			continue
 		}
@@ -157,6 +162,15 @@ func (s *Store) Enroll(studentID, courseID string) (*Enrollment, error) {
 		return nil, ErrAlreadyInWaitlist
 	}
 
+	if !s.checkPrerequisites(student, course) {
+		return nil, ErrPrerequisiteNotCompleted
+	}
+
+	enrolledCredits := s.getEnrolledCredits(studentID)
+	if enrolledCredits+course.Credits > student.MaxCredits {
+		return nil, ErrMaxCreditsExceeded
+	}
+
 	enrollmentCount := s.getEnrollmentCount(courseID)
 	if enrollmentCount >= course.Capacity {
 		waitlistEntry := &WaitlistEntry{
@@ -175,15 +189,6 @@ func (s *Store) Enroll(studentID, courseID string) (*Enrollment, error) {
 		s.enrollments[enrollment.ID] = enrollment
 
 		return enrollment, ErrCourseFull
-	}
-
-	if !s.checkPrerequisites(student, course) {
-		return nil, ErrPrerequisiteNotCompleted
-	}
-
-	enrolledCredits := s.getEnrolledCredits(studentID)
-	if enrolledCredits+course.Credits > student.MaxCredits {
-		return nil, ErrMaxCreditsExceeded
 	}
 
 	enrollment := &Enrollment{

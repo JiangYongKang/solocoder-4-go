@@ -1,0 +1,8 @@
+产物不满意：
+1. 在 service.go 的 CreateAppointment 方法中，模型将 LockSlot 和 ConfirmAppointment 的全部校验逻辑内联到了同一个函数里，导致约 70 行代码与原有两个方法高度重复。例如患者存在性检查和号源查找逻辑在 LockSlot、ConfirmAppointment 和 CreateAppointment 中出现了三份。后续如果校验规则变更（如增加新的号源状态），需要在三个地方同步修改，增加了维护成本和出错风险。正确做法是提取一个不含锁的内部方法 createAppointmentInternal，分别由 CreateAppointment 和 LockSlot+ConfirmAppointment 两个流程在持锁后调用，消除重复并保证逻辑一致性。
+2. 在 service.go 的 CreateAppointment 方法第 449 至 451 行，模型在预约成功创建后添加了 `if slot.Status == SlotStatusLocked { svc.clearLockInternal(slot) }` 的清理逻辑，但该代码路径在实际执行中不可达。因为第 416 至 422 行已经对所有 LOCKED 状态的号源做了完整处理：锁已过期则调用 clearLockInternal 清除，锁未过期则直接返回 ErrSlotAlreadyLocked 错误结束函数。经过这段逻辑后号源状态不可能是 LOCKED，导致第 449 行的 if 条件永远为 false。这表明模型在编写清理代码时没有完整追踪控制流，只是机械地照搬了 ConfirmAppointment 中的清理模式而未验证可达性。
+3. 在 service_test.go 中新增的 TestConcurrentAppointment_NoOversell 和 TestConcurrentAppointment_MultipleSlots 两个测试用例在并发场景下全部通过，但由于 CreateAppointment 使用的是 svc.store.mu.Lock 全局写锁而非号源级别的锁，所有并发 goroutine 在争抢同一把全局锁时实际是串行执行的。测试表面上验证了"不超售"这个结果，但并未真正验证高并发下的锁竞争正确性——15 个 goroutine 只是在排队依次获得全局锁后顺序执行。正确做法应在测试中增加对不同号源的并行操作，验证全局锁不会错误地阻塞无关号源的并发预约。
+
+过程不满意：
+1. 模型在收到提示词后，第一步就直接用 todo_write 创建了 6 项子任务计划，然后才开始阅读 service.go 和 service_test.go 的代码。这种"先规划再看代码"的顺序不符合标注规范中"应先分析问题再规划"的要求，导致后续执行中需要反复读取 service.go（共读了 4 次）来确认 LockSlot 的完整实现和 ChangeAppointment 的代码位置。如果先花一轮读取完整了解所有相关代码再制定计划，可以避免多次重复查看同一文件的不同区域，提升推理效率。
+2. 模型在运行测试时执行的命令为 `go test ./internal/appointment/ -v -count=1 undefined`，命令末尾附带了一个无效的 `undefined` 文本，说明模型在构造 Shell 命令时没有仔细校验参数完整性。此外模型在测试通过后的总结中声称"71/71 个测试用例全部通过（原有 67 个 + 新增 2 个并发测试 + 2 个修复后原有测试）"，但实际测试输出只包含 65 个测试函数的 PASS 行，67+2 的基数计算也是错误的。这种未对照实际测试输出就宣称完成并给出错误数字的行为属于幻觉与虚假完成，模型把"测试跑了"等同于"我知道跑了多少个测试"。正确做法是在运行测试后根据实际输出的 PASS 行数量来统计测试用例数，而不是根据记忆估算一个数字。

@@ -394,26 +394,77 @@ func (svc *Service) CheckAndReleaseExpiredLocks() int {
 }
 
 func (svc *Service) CreateAppointment(req *CreateAppointmentRequest) (*Appointment, error) {
-	if _, err := svc.LockSlot(&LockSlotRequest{
-		SlotID:    req.SlotID,
-		PatientID: req.PatientID,
-	}); err != nil {
-		return nil, err
+	svc.store.mu.Lock()
+	defer svc.store.mu.Unlock()
+
+	if svc.store.LockTimeout <= 0 {
+		return nil, ErrLockTimeoutInvalid
 	}
 
-	return svc.ConfirmAppointment(&ConfirmAppointmentRequest{
-		SlotID:    req.SlotID,
-		PatientID: req.PatientID,
-	})
+	patient, exists := svc.store.patients[req.PatientID]
+	if !exists {
+		return nil, ErrPatientNotFound
+	}
+
+	slot, exists := svc.store.slotMap[req.SlotID]
+	if !exists {
+		return nil, ErrSlotNotFound
+	}
+
+	now := svc.store.NowFunc()
+
+	if slot.Status == SlotStatusLocked {
+		if slot.LockExpireAt != nil && now.After(*slot.LockExpireAt) {
+			svc.clearLockInternal(slot)
+		} else {
+			return nil, ErrSlotAlreadyLocked
+		}
+	}
+
+	remaining := slot.TotalCapacity - slot.BookedCount
+	if remaining <= 0 {
+		return nil, ErrSlotNoCapacity
+	}
+
+	apptID := svc.store.generateID("APT")
+	confirmedAt := now
+	appointment := &Appointment{
+		ID:            apptID,
+		PatientID:     patient.ID,
+		PatientName:   patient.Name,
+		SlotID:        slot.ID,
+		DoctorID:      slot.DoctorID,
+		DoctorName:    slot.DoctorName,
+		Department:    slot.Department,
+		Date:          slot.Date,
+		StartTime:     slot.StartTime,
+		EndTime:       slot.EndTime,
+		Status:        AppointmentStatusConfirmed,
+		IsNoShow:      false,
+		CreatedAt:     now,
+		ConfirmedAt:   &confirmedAt,
+	}
+
+	slot.BookedCount++
+	if slot.Status == SlotStatusLocked {
+		svc.clearLockInternal(slot)
+	}
+
+	if slot.BookedCount >= slot.TotalCapacity {
+		slot.Status = SlotStatusBooked
+	} else {
+		slot.Status = SlotStatusAvailable
+	}
+
+	svc.store.appointments[apptID] = appointment
+	svc.store.patientApptMap[patient.ID] = append(svc.store.patientApptMap[patient.ID], apptID)
+
+	return appointment, nil
 }
 
 func (svc *Service) ChangeAppointment(req *ChangeAppointmentRequest) (*Appointment, error) {
 	svc.store.mu.Lock()
 	defer svc.store.mu.Unlock()
-
-	if req.AppointmentID == req.NewSlotID {
-		return nil, ErrSameSlotChange
-	}
 
 	patient, exists := svc.store.patients[req.PatientID]
 	if !exists {
@@ -431,6 +482,10 @@ func (svc *Service) ChangeAppointment(req *ChangeAppointmentRequest) (*Appointme
 
 	if oldAppt.Status != AppointmentStatusConfirmed {
 		return nil, ErrChangeNotAllowed
+	}
+
+	if oldAppt.SlotID == req.NewSlotID {
+		return nil, ErrSameSlotChange
 	}
 
 	now := svc.store.NowFunc()

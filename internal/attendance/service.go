@@ -342,6 +342,8 @@ func (s *Service) CalculateAttendance(sessionID string) ([]*AttendanceRecord, er
 		checkInRecord := s.checkInRecords[recordKey]
 
 		var status AttendanceStatus
+		isLate := false
+		isEarlyLeave := false
 		isLeave := false
 		var leaveID string
 
@@ -352,7 +354,7 @@ func (s *Service) CalculateAttendance(sessionID string) ([]*AttendanceRecord, er
 		} else if checkInRecord == nil || checkInRecord.CheckInTime == nil {
 			status = StatusAbsent
 		} else {
-			status = s.calculateStatus(rule, sessionDate, checkInRecord)
+			status, isLate, isEarlyLeave = s.calculateStatus(rule, sessionDate, checkInRecord)
 		}
 
 		record := &AttendanceRecord{
@@ -364,6 +366,8 @@ func (s *Service) CalculateAttendance(sessionID string) ([]*AttendanceRecord, er
 			CheckInTime:  nil,
 			CheckOutTime: nil,
 			Status:       status,
+			IsLate:       isLate,
+			IsEarlyLeave: isEarlyLeave,
 			IsLeave:      isLeave,
 			LeaveID:      leaveID,
 			CalculatedAt: time.Now(),
@@ -385,41 +389,45 @@ func (s *Service) CalculateAttendance(sessionID string) ([]*AttendanceRecord, er
 	return records, nil
 }
 
-func (s *Service) calculateStatus(rule *AttendanceRule, sessionDate time.Time, record *CheckInRecord) AttendanceStatus {
-	ruleCheckInStart := time.Date(sessionDate.Year(), sessionDate.Month(), sessionDate.Day(),
-		rule.CheckInStartTime.Hour(), rule.CheckInStartTime.Minute(), rule.CheckInStartTime.Second(), 0, sessionDate.Location())
-	ruleCheckInEnd := time.Date(sessionDate.Year(), sessionDate.Month(), sessionDate.Day(),
-		rule.CheckInEndTime.Hour(), rule.CheckInEndTime.Minute(), rule.CheckInEndTime.Second(), 0, sessionDate.Location())
-	ruleCheckOutStart := time.Date(sessionDate.Year(), sessionDate.Month(), sessionDate.Day(),
-		rule.CheckOutStartTime.Hour(), rule.CheckOutStartTime.Minute(), rule.CheckOutStartTime.Second(), 0, sessionDate.Location())
-	ruleCheckOutEnd := time.Date(sessionDate.Year(), sessionDate.Month(), sessionDate.Day(),
-		rule.CheckOutEndTime.Hour(), rule.CheckOutEndTime.Minute(), rule.CheckOutEndTime.Second(), 0, sessionDate.Location())
+func truncateToMinute(t time.Time) time.Time {
+	return t.Truncate(time.Minute)
+}
 
-	lateThreshold := ruleCheckInStart.Add(time.Duration(rule.LateThresholdMinutes) * time.Minute)
-	earlyThreshold := ruleCheckOutEnd.Add(-time.Duration(rule.EarlyLeaveThresholdMinutes) * time.Minute)
+func (s *Service) calculateStatus(rule *AttendanceRule, sessionDate time.Time, record *CheckInRecord) (AttendanceStatus, bool, bool) {
+	ruleCheckInStart := truncateToMinute(time.Date(sessionDate.Year(), sessionDate.Month(), sessionDate.Day(),
+		rule.CheckInStartTime.Hour(), rule.CheckInStartTime.Minute(), rule.CheckInStartTime.Second(), 0, sessionDate.Location()))
+	ruleCheckInEnd := truncateToMinute(time.Date(sessionDate.Year(), sessionDate.Month(), sessionDate.Day(),
+		rule.CheckInEndTime.Hour(), rule.CheckInEndTime.Minute(), rule.CheckInEndTime.Second(), 0, sessionDate.Location()))
+	ruleCheckOutStart := truncateToMinute(time.Date(sessionDate.Year(), sessionDate.Month(), sessionDate.Day(),
+		rule.CheckOutStartTime.Hour(), rule.CheckOutStartTime.Minute(), rule.CheckOutStartTime.Second(), 0, sessionDate.Location()))
+	ruleCheckOutEnd := truncateToMinute(time.Date(sessionDate.Year(), sessionDate.Month(), sessionDate.Day(),
+		rule.CheckOutEndTime.Hour(), rule.CheckOutEndTime.Minute(), rule.CheckOutEndTime.Second(), 0, sessionDate.Location()))
 
-	checkInTime := *record.CheckInTime
-	isLate := checkInTime.After(lateThreshold) && checkInTime.Before(ruleCheckInEnd.Add(time.Nanosecond))
+	lateThreshold := truncateToMinute(ruleCheckInStart.Add(time.Duration(rule.LateThresholdMinutes) * time.Minute))
+	earlyThreshold := truncateToMinute(ruleCheckOutEnd.Add(-time.Duration(rule.EarlyLeaveThresholdMinutes) * time.Minute))
+
+	checkInTime := truncateToMinute(*record.CheckInTime)
+	isLate := checkInTime.After(lateThreshold) && !checkInTime.After(ruleCheckInEnd)
 
 	if record.CheckOutTime == nil {
 		if isLate {
-			return StatusLate
+			return StatusLate, isLate, false
 		}
-		return StatusPresent
+		return StatusPresent, isLate, false
 	}
 
-	checkOutTime := *record.CheckOutTime
-	isEarlyLeave := checkOutTime.Before(earlyThreshold) && checkOutTime.After(ruleCheckOutStart.Add(-time.Nanosecond))
+	checkOutTime := truncateToMinute(*record.CheckOutTime)
+	isEarlyLeave := checkOutTime.Before(earlyThreshold) && !checkOutTime.Before(ruleCheckOutStart)
 
 	if isLate && isEarlyLeave {
-		return StatusEarlyLeave
+		return StatusLateAndEarlyLeave, isLate, isEarlyLeave
 	} else if isLate {
-		return StatusLate
+		return StatusLate, isLate, isEarlyLeave
 	} else if isEarlyLeave {
-		return StatusEarlyLeave
+		return StatusEarlyLeave, isLate, isEarlyLeave
 	}
 
-	return StatusPresent
+	return StatusPresent, isLate, isEarlyLeave
 }
 
 func (s *Service) GenerateAbsenceNotifications(sessionID string) ([]*AbsenceNotification, error) {
@@ -443,17 +451,62 @@ func (s *Service) GenerateAbsenceNotifications(sessionID string) ([]*AbsenceNoti
 			continue
 		}
 
-		if record.Status == StatusAbsent || record.Status == StatusLate || record.Status == StatusEarlyLeave {
+		if record.Status == StatusAbsent {
 			notification := &AbsenceNotification{
-				ID:              s.generateID("NOT"),
-				StudentID:       record.StudentID,
-				StudentName:     record.StudentName,
-				ClassID:         record.ClassID,
-				ClassName:       class.Name,
-				SessionID:       sessionID,
-				SessionDate:     session.Date,
-				Status:          record.Status,
-				NotifiedAt:      time.Now(),
+				ID:               s.generateID("NOT"),
+				StudentID:        record.StudentID,
+				StudentName:      record.StudentName,
+				ClassID:          record.ClassID,
+				ClassName:        class.Name,
+				SessionID:        sessionID,
+				SessionDate:      session.Date,
+				Status:           record.Status,
+				NotifiedAt:       time.Now(),
+				NotificationSent: true,
+			}
+			s.notifications[notification.ID] = notification
+			notifications = append(notifications, notification)
+		} else if record.Status == StatusLateAndEarlyLeave {
+			lateNotification := &AbsenceNotification{
+				ID:               s.generateID("NOT"),
+				StudentID:        record.StudentID,
+				StudentName:      record.StudentName,
+				ClassID:          record.ClassID,
+				ClassName:        class.Name,
+				SessionID:        sessionID,
+				SessionDate:      session.Date,
+				Status:           StatusLate,
+				NotifiedAt:       time.Now(),
+				NotificationSent: true,
+			}
+			s.notifications[lateNotification.ID] = lateNotification
+			notifications = append(notifications, lateNotification)
+
+			earlyNotification := &AbsenceNotification{
+				ID:               s.generateID("NOT"),
+				StudentID:        record.StudentID,
+				StudentName:      record.StudentName,
+				ClassID:          record.ClassID,
+				ClassName:        class.Name,
+				SessionID:        sessionID,
+				SessionDate:      session.Date,
+				Status:           StatusEarlyLeave,
+				NotifiedAt:       time.Now(),
+				NotificationSent: true,
+			}
+			s.notifications[earlyNotification.ID] = earlyNotification
+			notifications = append(notifications, earlyNotification)
+		} else if record.IsLate || record.IsEarlyLeave {
+			notification := &AbsenceNotification{
+				ID:               s.generateID("NOT"),
+				StudentID:        record.StudentID,
+				StudentName:      record.StudentName,
+				ClassID:          record.ClassID,
+				ClassName:        class.Name,
+				SessionID:        sessionID,
+				SessionDate:      session.Date,
+				Status:           record.Status,
+				NotifiedAt:       time.Now(),
 				NotificationSent: true,
 			}
 			s.notifications[notification.ID] = notification
@@ -502,21 +555,24 @@ func (s *Service) GetClassSummary(classID string, startDate, endDate time.Time) 
 				switch record.Status {
 				case StatusPresent:
 					summary.PresentCount++
-				case StatusLate:
-					summary.LateCount++
-				case StatusEarlyLeave:
-					summary.EarlyLeaveCount++
 				case StatusAbsent:
 					summary.AbsentCount++
 				case StatusLeave:
 					summary.LeaveCount++
+				}
+				if record.IsLate {
+					summary.LateCount++
+				}
+				if record.IsEarlyLeave {
+					summary.EarlyLeaveCount++
 				}
 			}
 		}
 	}
 
 	if totalRecords > 0 {
-		summary.AttendanceRate = float64(summary.PresentCount+summary.LeaveCount) / float64(totalRecords) * 100
+		attended := summary.PresentCount + summary.LateCount + summary.EarlyLeaveCount + summary.LeaveCount
+		summary.AttendanceRate = float64(attended) / float64(totalRecords) * 100
 	}
 
 	return summary, nil
@@ -565,21 +621,24 @@ func (s *Service) GetStudentSummary(studentID, classID string, startDate, endDat
 				switch record.Status {
 				case StatusPresent:
 					summary.PresentCount++
-				case StatusLate:
-					summary.LateCount++
-				case StatusEarlyLeave:
-					summary.EarlyLeaveCount++
 				case StatusAbsent:
 					summary.AbsentCount++
 				case StatusLeave:
 					summary.LeaveCount++
+				}
+				if record.IsLate {
+					summary.LateCount++
+				}
+				if record.IsEarlyLeave {
+					summary.EarlyLeaveCount++
 				}
 			}
 		}
 	}
 
 	if summary.TotalSessions > 0 {
-		summary.AttendanceRate = float64(summary.PresentCount+summary.LeaveCount) / float64(summary.TotalSessions) * 100
+		attended := summary.PresentCount + summary.LateCount + summary.EarlyLeaveCount + summary.LeaveCount
+		summary.AttendanceRate = float64(attended) / float64(summary.TotalSessions) * 100
 	}
 
 	return summary, nil

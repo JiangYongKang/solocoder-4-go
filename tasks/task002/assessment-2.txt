@@ -1,0 +1,6 @@
+产物不满意：
+1. findAvailableBeds 方法中有 `criteria.BedType != ""` 的前置过滤，而 matchPatientCondition 方法内部第一条又是相同的 `criteria.BedType != ""` 检查，同一个床位类型筛选逻辑在两处重复实现。如果未来修改类型匹配规则只改一处而遗漏另一处，会导致两函数行为不一致，增加维护风险。根本原因是模型重构 matchPatientCondition 时未注意到 findAvailableBeds 已存在前置过滤，未统一两个函数的职责边界。应将所有匹配逻辑收敛到 matchPatientCondition，删除 findAvailableBeds 中的重复判断。
+2. matchPatientCondition 方法末尾以 `return true` 作为兜底逻辑，当患者条件字符串不是 "general""surgery""icu""infectious" 时，方法会静默匹配任意床位类型。TestMultiCondition_GeneralPatientCanUseSurgeryBed 通过的是第 6 个 if 分支而非兜底 return true，测试未能覆盖条件值意外拼写错误的防御场景。若条件被误填为 "emergancy"，患者会被分配到不合适的床位，产生医疗安全隐患。根本原因是采用白名单加全通配策略，缺少对未知条件值的拒绝机制。应在所有已知条件未匹配时返回 false。
+过程不满意：
+1. 模型在收到提示词后第一步就调用了 todo_write 创建 3 项任务，之后才用 view_files 读取 allocator.go 分析代码。这违反了标注规范中"应先分析问题再规划"的原则，模型在未理解代码结构和缺陷细节时就制定了执行计划。虽然 TodoList 条目简单且最终恰好匹配实际修复步骤，但在不熟悉的代码库中这种前置规划容易与实际需求脱节导致反复调整。正确做法是先阅读代码理解问题全貌再规划步骤。
+2. 模型在 session-cot-2.md 中的分析仅限于重述提示词中的两个缺陷描述，随后直接修改代码，全程仅经历读代码、改代码、读测试、加测试四步操作。思考过程中看不到对患者条件与床位类型的交叉组合做系统性穷举分析，没有列出条件矩阵或逐一推演匹配结果。虽然产物通过了所有测试，但这种跳过系统分析直觉编码的模式，在复杂逻辑修复场景下容易遗漏隐式边界情况，应事先穷举全部条件组合再编码。

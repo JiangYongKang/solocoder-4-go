@@ -58,8 +58,8 @@ type CheckItem struct {
 	Description string
 	Category    ItemCategory
 	Unit        string
-	MinValue    float64
-	MaxValue    float64
+	MinValue    *float64
+	MaxValue    *float64
 	Price       float64
 }
 

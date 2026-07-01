@@ -1,0 +1,7 @@
+产物不满意：
+1. 模型在 enrollment.go 的 Enroll 方法中将先修课校验和学分上限校验从容量检查之后移到容量检查之前，使得不满足条件的学生在加入候补队列前即被拦截返回 ErrPrerequisiteNotCompleted 和 ErrMaxCreditsExceeded，修复了提示词第 1 条指出的问题。同时在 processWaitlist 方法中将不合格学生的处理从 waitlist[1:] 直接踢出改为 append(waitlist[1:], entry) 轮转到队列末尾，保留了递补资格。两处修复逻辑正确，新增的 6 个测试用例覆盖了入口拦截、队列保留和条件满足后递补三个场景，50 个测试全部通过，产物满足提示词全部要求，未发现代码缺陷。
+
+过程不满意：
+1. 模型在收到提示词后的第一步操作就是调用 todo_write 创建 5 项子任务计划，随后才开始读取 enrollment.go 代码，这违反了标注规范中"不能在刚收到任务时就直接创建 TodoList，应先分析问题再规划"的要求。虽然本次任务逻辑清晰模型后续没有因规划不当而反复调整架构，但跳过分析直接做计划的习惯降低了规划与实际情况的匹配度风险。
+2. 模型在编写 TestWaitlist_IneligibleStudentsKeptInQueue 测试用例时，最初断言队列处理后顺序应为 S005 在 S004 之前，但经过重新推理后发现自己对轮转逻辑的理解有误，又改回 S004 在 S005 之前。这是同一个测试断言在前后两轮 edit_file_search_replace 中方向相反，属于一次试错式调试，正确做法应先在纸上或注释中推演队列变化过程后再写断言。
+3. 模型在 summary 中声称"新增 6 个测试用例（替换了原来的 2 个）"，但实际原来的 TestWaitlist_PromotionSkipsIneligibleStudents 和 TestWaitlist_PromotionSkipsCreditLimit 两个测试覆盖的场景在新实现中已不可达，因为 Enroll 入口直接拒绝不合格学生进入候补队列。模型在修改测试时意识到了需要调整旧测试，但没有在总结中解释为什么旧测试被移除以及新测试如何对应提示词第 3 条的补充要求，缺少对测试覆盖变更的完整说明。

@@ -1,0 +1,5 @@
+你实现的门诊预约管理模块存在以下问题需要修复：
+1. CreateAppointment 方法内部先后调用了 LockSlot 和 ConfirmAppointment，两次调用各自独立获取和释放互斥锁。在两次锁操作之间的间隙，其他并发请求可能修改了号源状态，例如另一个预约完成后号源满了，但 ConfirmAppointment 仍会将 BookedCount 递增突破容量上限。需要保证从锁定到确认的整个过程是原子性的。
+2. ChangeAppointment 方法中判断"是否改约到同一个号源"的检查使用了 `req.AppointmentID == req.NewSlotID`，比较的是预约ID和号源ID，两者属于不同的ID体系，正常情况下不可能相等。对应的测试用例 TestChangeAppointment_SameSlot 也错误地向 NewSlotID 传入了预约ID，导致这条检查和测试都仅在巧合条件下通过。需要修正该比较逻辑和对应的测试用例。
+3. 修复后需要确认所有已有测试仍然通过，并针对并发预约突破容量上限的场景补充单元测试，验证多 goroutine 同时通过 CreateAppointment 预约同一号源时不会超售。
+4. 运行 go test ./internal/appointment/ -v，需要让所有测试通过。

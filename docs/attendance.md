@@ -88,7 +88,9 @@
   - `StudentID/StudentName`：学生信息
   - `SessionID/ClassID`：关联场次和班级
   - `CheckInTime/CheckOutTime`：签到签退时间（从签到记录同步）
-  - `Status`：考勤状态（正常/迟到/早退/缺勤/请假）
+  - `Status`：考勤状态（正常/迟到/早退/迟到早退/缺勤/请假）
+  - `IsLate`：是否迟到（独立标志，用于复合状态统计）
+  - `IsEarlyLeave`：是否早退（独立标志，用于复合状态统计）
   - `IsLeave`：是否为请假
   - `LeaveID`：关联的请假申请ID
   - `CalculatedAt`：结果计算时间
@@ -99,12 +101,14 @@
   - `StudentID/StudentName`：学生信息（学生汇总时）
   - `ClassID/ClassName`：班级信息
   - `TotalSessions`：总考勤场次
-  - `PresentCount`：正常出勤次数
-  - `LateCount`：迟到次数
-  - `EarlyLeaveCount`：早退次数
+  - `PresentCount`：正常出勤次数（仅完全正常，不含迟到早退）
+  - `LateCount`：迟到次数（基于 IsLate 标志统计，包含复合状态）
+  - `EarlyLeaveCount`：早退次数（基于 IsEarlyLeave 标志统计，包含复合状态）
   - `AbsentCount`：缺勤次数
   - `LeaveCount`：请假次数
-  - `AttendanceRate`：出勤率
+  - `AttendanceRate`：出勤率 = (PresentCount + LateCount + EarlyLeaveCount + LeaveCount) / TotalSessions * 100
+
+> **注意**：迟到和早退统计基于独立标志位，当学生同时迟到和早退时，LateCount 和 EarlyLeaveCount 会分别各加1，确保两种异常都被完整记录。
 
 #### AbsenceNotification（缺勤通知）
 - **职责**：存储异常考勤的通知记录
@@ -116,6 +120,8 @@
   - `Status`：异常状态（迟到/早退/缺勤）
   - `NotifiedAt`：通知生成时间
   - `NotificationSent`：是否已发送
+
+> **注意**：当学生同时迟到和早退时，会生成两条独立的通知记录（一条迟到通知和一条早退通知），确保两种异常都被完整通知。
 
 ### 2.5 核心服务
 
@@ -138,7 +144,8 @@
 |------|------|
 | `PRESENT`（正常） | 按时签到和签退 |
 | `LATE`（迟到） | 签到时间晚于迟到阈值，但在签到截止时间前 |
-| `EARLY_LEAVE`（早退） | 签退时间早于早退阈值，但在签退开始时间后；或同时迟到且早退 |
+| `EARLY_LEAVE`（早退） | 签退时间早于早退阈值，但在签退开始时间后 |
+| `LATE_AND_EARLY_LEAVE`（迟到早退） | 同时满足迟到和早退条件，两种异常分别统计 |
 | `ABSENT`（缺勤） | 未签到，或请假申请被驳回 |
 | `LEAVE`（请假） | 请假申请已批准 |
 
@@ -146,6 +153,7 @@
 
 #### 时间计算基准
 - 将考勤规则中的时间与考勤场次的日期结合，计算当天的具体时间点
+- 所有时间比较统一截断到分钟精度，确保相同时钟时刻（如 09:00:00）无论纳秒值如何，判定结果一致
 - 例如：规则中签到开始时间为 08:00，场次日期为 2024-06-01，则实际签到开始时间为 2024-06-01 08:00:00
 
 #### 判定优先级
@@ -153,8 +161,14 @@
 2. **缺勤判定**：如果没有签到记录或请假申请被驳回，判定为 `ABSENT`
 3. **迟到判定**：签到时间 > 签到开始时间 + 迟到阈值，且 ≤ 签到截止时间
 4. **早退判定**：签退时间 < 签退截止时间 - 早退阈值，且 ≥ 签退开始时间
-5. **迟到且早退**：同时满足迟到和早退条件，按 `EARLY_LEAVE` 处理
+5. **迟到且早退**：同时满足迟到和早退条件，判定为 `LATE_AND_EARLY_LEAVE`，并设置 `IsLate` 和 `IsEarlyLeave` 两个独立标志
 6. **正常出勤**：不满足以上异常条件
+
+#### 时间比较精度
+- 所有时间值在比较前统一使用 `Truncate(time.Minute)` 截断到分钟
+- 确保在阈值临界点（如恰好 08:10:00）的判定结果稳定，不受纳秒级差异影响
+- 迟到判定：`checkInTime.After(lateThreshold) && !checkInTime.After(ruleCheckInEnd)`
+- 早退判定：`checkOutTime.Before(earlyThreshold) && !checkOutTime.Before(ruleCheckOutStart)`
 
 ### 3.3 示例场景
 
@@ -168,14 +182,15 @@
 - 迟到阈值时间 = 08:00 + 10分钟 = 08:10
 - 早退阈值时间 = 18:00 - 10分钟 = 17:50
 
-| 签到时间 | 签退时间 | 判定结果 |
-|----------|----------|----------|
-| 08:05 | 17:55 | PRESENT（正常） |
-| 08:15 | - | LATE（迟到） |
-| 08:05 | 17:30 | EARLY_LEAVE（早退） |
-| 08:15 | 17:30 | EARLY_LEAVE（迟到且早退） |
-| - | - | ABSENT（缺勤） |
-| （已请假） | - | LEAVE（请假） |
+| 签到时间 | 签退时间 | 判定结果 | 附加说明 |
+|----------|----------|----------|----------|
+| 08:05 | 17:55 | PRESENT（正常） | IsLate=false, IsEarlyLeave=false |
+| 08:15 | - | LATE（迟到） | IsLate=true, IsEarlyLeave=false |
+| 08:05 | 17:30 | EARLY_LEAVE（早退） | IsLate=false, IsEarlyLeave=true |
+| 08:15 | 17:30 | LATE_AND_EARLY_LEAVE（迟到早退） | IsLate=true, IsEarlyLeave=true，分别计入迟到和早退统计 |
+| 08:10:00.000 | 17:50:00.999 | PRESENT（正常） | 分钟级精度，纳秒差异不影响判定 |
+| - | - | ABSENT（缺勤） | - |
+| （已请假） | - | LEAVE（请假） | - |
 
 ## 4. 使用示例
 

@@ -116,6 +116,7 @@ var (
 	ErrInvalidDoctorAssignment = errors.New("doctor does not match the assigned doctor")
 	ErrSelfFollowUpNotAllowed  = errors.New("follow-up messages must be sent by patient")
 	ErrMessageTooLong          = errors.New("message content exceeds maximum length")
+	ErrInvalidSenderType       = errors.New("invalid message sender type, must be PATIENT or DOCTOR")
 )
 
 const (

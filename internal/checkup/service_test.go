@@ -28,8 +28,8 @@ func setupTestStore() *Store {
 		Description: "检测血液中白细胞数量",
 		Category:    ItemCategoryLaboratory,
 		Unit:        "×10⁹/L",
-		MinValue:    4.0,
-		MaxValue:    10.0,
+		MinValue:    floatPtr(4.0),
+		MaxValue:    floatPtr(10.0),
 		Price:       25.0,
 	})
 
@@ -38,8 +38,8 @@ func setupTestStore() *Store {
 		Description: "检测血液中红细胞数量",
 		Category:    ItemCategoryLaboratory,
 		Unit:        "×10¹²/L",
-		MinValue:    4.3,
-		MaxValue:    5.8,
+		MinValue:    floatPtr(4.3),
+		MaxValue:    floatPtr(5.8),
 		Price:       20.0,
 	})
 
@@ -48,8 +48,8 @@ func setupTestStore() *Store {
 		Description: "检测肝脏功能指标",
 		Category:    ItemCategoryLaboratory,
 		Unit:        "U/L",
-		MinValue:    0,
-		MaxValue:    40,
+		MinValue:    floatPtr(0),
+		MaxValue:    floatPtr(40),
 		Price:       30.0,
 	})
 
@@ -58,8 +58,8 @@ func setupTestStore() *Store {
 		Description: "胸部X线检查",
 		Category:    ItemCategoryImaging,
 		Unit:        "",
-		MinValue:    0,
-		MaxValue:    0,
+		MinValue:    nil,
+		MaxValue:    nil,
 		Price:       100.0,
 	})
 
@@ -68,8 +68,8 @@ func setupTestStore() *Store {
 		Description: "检测心脏电活动",
 		Category:    ItemCategoryFunctional,
 		Unit:        "",
-		MinValue:    0,
-		MaxValue:    0,
+		MinValue:    nil,
+		MaxValue:    nil,
 		Price:       50.0,
 	})
 
@@ -133,8 +133,8 @@ func TestAddItem_Success(t *testing.T) {
 		Name:     "测试项目",
 		Category: ItemCategoryPhysical,
 		Unit:     "mmHg",
-		MinValue: 60,
-		MaxValue: 90,
+		MinValue: floatPtr(60),
+		MaxValue: floatPtr(90),
 		Price:    15.0,
 	})
 	if item.ID == "" {
@@ -1211,7 +1211,7 @@ func TestConcurrentAppointments(t *testing.T) {
 	item := store.AddItem(&AddItemRequest{
 		Name:     "检查项目",
 		Category: ItemCategoryLaboratory,
-		MinValue: 0, MaxValue: 100, Price: 50,
+		MinValue: floatPtr(0), MaxValue: floatPtr(100), Price: 50,
 	})
 	pkg, _ := store.CreatePackage(&CreatePackageRequest{
 		Name:    "套餐",
@@ -1471,5 +1471,441 @@ func TestBoundaryCapacityOne(t *testing.T) {
 	})
 	if err != ErrTimeSlotCapacityFull {
 		t.Errorf("expected ErrTimeSlotCapacityFull for capacity=1, got %v", err)
+	}
+}
+
+func TestRecordResult_ReferenceZeroLowerBound_NegativeValue(t *testing.T) {
+	store := NewStore()
+	patientID := store.AddPatient(&Patient{Name: "测试患者"})
+
+	item := store.AddItem(&AddItemRequest{
+		Name:     "血氧饱和度",
+		Category: ItemCategoryLaboratory,
+		Unit:     "%",
+		MinValue: floatPtr(0),
+		MaxValue: floatPtr(100),
+		Price:    50.0,
+	})
+	pkg, _ := store.CreatePackage(&CreatePackageRequest{
+		Name:    "测试套餐",
+		ItemIDs: []string{item.ID},
+	})
+	date := time.Date(2026, 7, 1, 0, 0, 0, 0, time.Local)
+	start := time.Date(2026, 7, 1, 8, 0, 0, 0, time.Local)
+	end := time.Date(2026, 7, 1, 10, 0, 0, 0, time.Local)
+	slot, _ := store.CreateTimeSlot(&CreateTimeSlotRequest{
+		Date:      date,
+		StartTime: start,
+		EndTime:   end,
+		Capacity:  10,
+	})
+	appt, _ := store.CreateAppointment(&CreateAppointmentRequest{
+		PatientID:  patientID,
+		PackageID:  pkg.ID,
+		TimeSlotID: slot.ID,
+	})
+
+	result, err := store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt.ID,
+		ItemID:        item.ID,
+		Value:         "-5",
+		Remarks:       "仪器异常",
+	})
+	if err != nil {
+		t.Fatalf("RecordResult failed: %v", err)
+	}
+	if !result.IsAbnormal {
+		t.Error("expected result to be abnormal (-5 is below 0)")
+	}
+	if result.Reference != "0.00 - 100.00 %" {
+		t.Errorf("expected reference '0.00 - 100.00 %%', got '%s'", result.Reference)
+	}
+}
+
+func TestRecordResult_ReferenceZeroLowerBound_UpperLimitExceed(t *testing.T) {
+	store := NewStore()
+	patientID := store.AddPatient(&Patient{Name: "测试患者"})
+
+	item := store.AddItem(&AddItemRequest{
+		Name:     "血氧饱和度",
+		Category: ItemCategoryLaboratory,
+		Unit:     "%",
+		MinValue: floatPtr(0),
+		MaxValue: floatPtr(100),
+		Price:    50.0,
+	})
+	pkg, _ := store.CreatePackage(&CreatePackageRequest{
+		Name:    "测试套餐",
+		ItemIDs: []string{item.ID},
+	})
+	date := time.Date(2026, 7, 1, 0, 0, 0, 0, time.Local)
+	start := time.Date(2026, 7, 1, 8, 0, 0, 0, time.Local)
+	end := time.Date(2026, 7, 1, 10, 0, 0, 0, time.Local)
+	slot, _ := store.CreateTimeSlot(&CreateTimeSlotRequest{
+		Date:      date,
+		StartTime: start,
+		EndTime:   end,
+		Capacity:  10,
+	})
+	appt, _ := store.CreateAppointment(&CreateAppointmentRequest{
+		PatientID:  patientID,
+		PackageID:  pkg.ID,
+		TimeSlotID: slot.ID,
+	})
+
+	result, err := store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt.ID,
+		ItemID:        item.ID,
+		Value:         "105",
+	})
+	if err != nil {
+		t.Fatalf("RecordResult failed: %v", err)
+	}
+	if !result.IsAbnormal {
+		t.Error("expected result to be abnormal (105 is above 100)")
+	}
+}
+
+func TestRecordResult_ReferenceZeroLowerBound_NormalValue(t *testing.T) {
+	store := NewStore()
+	patientID := store.AddPatient(&Patient{Name: "测试患者"})
+
+	item := store.AddItem(&AddItemRequest{
+		Name:     "血氧饱和度",
+		Category: ItemCategoryLaboratory,
+		Unit:     "%",
+		MinValue: floatPtr(0),
+		MaxValue: floatPtr(100),
+		Price:    50.0,
+	})
+	pkg, _ := store.CreatePackage(&CreatePackageRequest{
+		Name:    "测试套餐",
+		ItemIDs: []string{item.ID},
+	})
+	date := time.Date(2026, 7, 1, 0, 0, 0, 0, time.Local)
+	start := time.Date(2026, 7, 1, 8, 0, 0, 0, time.Local)
+	end := time.Date(2026, 7, 1, 10, 0, 0, 0, time.Local)
+	slot, _ := store.CreateTimeSlot(&CreateTimeSlotRequest{
+		Date:      date,
+		StartTime: start,
+		EndTime:   end,
+		Capacity:  10,
+	})
+	appt, _ := store.CreateAppointment(&CreateAppointmentRequest{
+		PatientID:  patientID,
+		PackageID:  pkg.ID,
+		TimeSlotID: slot.ID,
+	})
+
+	result, err := store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt.ID,
+		ItemID:        item.ID,
+		Value:         "98",
+	})
+	if err != nil {
+		t.Fatalf("RecordResult failed: %v", err)
+	}
+	if result.IsAbnormal {
+		t.Error("expected result to be normal (98 is within 0-100)")
+	}
+}
+
+func TestRecordResult_OnlyUpperLimit(t *testing.T) {
+	store := NewStore()
+	patientID := store.AddPatient(&Patient{Name: "测试患者"})
+
+	item := store.AddItem(&AddItemRequest{
+		Name:     "心率",
+		Category: ItemCategoryFunctional,
+		Unit:     "次/分",
+		MinValue: nil,
+		MaxValue: floatPtr(100),
+		Price:    30.0,
+	})
+	pkg, _ := store.CreatePackage(&CreatePackageRequest{
+		Name:    "测试套餐",
+		ItemIDs: []string{item.ID},
+	})
+	date := time.Date(2026, 7, 1, 0, 0, 0, 0, time.Local)
+	start := time.Date(2026, 7, 1, 8, 0, 0, 0, time.Local)
+	end := time.Date(2026, 7, 1, 10, 0, 0, 0, time.Local)
+	slot, _ := store.CreateTimeSlot(&CreateTimeSlotRequest{
+		Date:      date,
+		StartTime: start,
+		EndTime:   end,
+		Capacity:  10,
+	})
+	appt, _ := store.CreateAppointment(&CreateAppointmentRequest{
+		PatientID:  patientID,
+		PackageID:  pkg.ID,
+		TimeSlotID: slot.ID,
+	})
+
+	result1, _ := store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt.ID,
+		ItemID:        item.ID,
+		Value:         "120",
+	})
+	if !result1.IsAbnormal {
+		t.Error("expected result to be abnormal (120 is above 100)")
+	}
+	if result1.Reference != "-∞ - 100.00 次/分" {
+		t.Errorf("expected reference '-∞ - 100.00 次/分', got '%s'", result1.Reference)
+	}
+}
+
+func TestRecordResult_OnlyLowerLimit(t *testing.T) {
+	store := NewStore()
+	patientID := store.AddPatient(&Patient{Name: "测试患者"})
+
+	item := store.AddItem(&AddItemRequest{
+		Name:     "身高",
+		Category: ItemCategoryPhysical,
+		Unit:     "cm",
+		MinValue: floatPtr(100),
+		MaxValue: nil,
+		Price:    10.0,
+	})
+	pkg, _ := store.CreatePackage(&CreatePackageRequest{
+		Name:    "测试套餐",
+		ItemIDs: []string{item.ID},
+	})
+	date := time.Date(2026, 7, 1, 0, 0, 0, 0, time.Local)
+	start := time.Date(2026, 7, 1, 8, 0, 0, 0, time.Local)
+	end := time.Date(2026, 7, 1, 10, 0, 0, 0, time.Local)
+	slot, _ := store.CreateTimeSlot(&CreateTimeSlotRequest{
+		Date:      date,
+		StartTime: start,
+		EndTime:   end,
+		Capacity:  10,
+	})
+
+	appt1, _ := store.CreateAppointment(&CreateAppointmentRequest{
+		PatientID:  patientID,
+		PackageID:  pkg.ID,
+		TimeSlotID: slot.ID,
+	})
+	result1, _ := store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt1.ID,
+		ItemID:        item.ID,
+		Value:         "90",
+	})
+	if !result1.IsAbnormal {
+		t.Error("expected result to be abnormal (90 is below 100)")
+	}
+	if result1.Reference != "100.00 - +∞ cm" {
+		t.Errorf("expected reference '100.00 - +∞ cm', got '%s'", result1.Reference)
+	}
+
+	appt2, _ := store.CreateAppointment(&CreateAppointmentRequest{
+		PatientID:  patientID,
+		PackageID:  pkg.ID,
+		TimeSlotID: slot.ID,
+	})
+	result2, _ := store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt2.ID,
+		ItemID:        item.ID,
+		Value:         "250",
+	})
+	if result2.IsAbnormal {
+		t.Error("expected result to be normal (250 is above 100, no upper limit)")
+	}
+}
+
+func TestRecordResult_NoReferenceRange(t *testing.T) {
+	store := NewStore()
+	patientID := store.AddPatient(&Patient{Name: "测试患者"})
+
+	item := store.AddItem(&AddItemRequest{
+		Name:     "X光检查",
+		Category: ItemCategoryImaging,
+		Unit:     "",
+		MinValue: nil,
+		MaxValue: nil,
+		Price:    100.0,
+	})
+	pkg, _ := store.CreatePackage(&CreatePackageRequest{
+		Name:    "测试套餐",
+		ItemIDs: []string{item.ID},
+	})
+	date := time.Date(2026, 7, 1, 0, 0, 0, 0, time.Local)
+	start := time.Date(2026, 7, 1, 8, 0, 0, 0, time.Local)
+	end := time.Date(2026, 7, 1, 10, 0, 0, 0, time.Local)
+	slot, _ := store.CreateTimeSlot(&CreateTimeSlotRequest{
+		Date:      date,
+		StartTime: start,
+		EndTime:   end,
+		Capacity:  10,
+	})
+	appt, _ := store.CreateAppointment(&CreateAppointmentRequest{
+		PatientID:  patientID,
+		PackageID:  pkg.ID,
+		TimeSlotID: slot.ID,
+	})
+
+	result, err := store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt.ID,
+		ItemID:        item.ID,
+		Value:         "100",
+		Remarks:       "心肺正常",
+	})
+	if err != nil {
+		t.Fatalf("RecordResult failed: %v", err)
+	}
+	if result.IsAbnormal {
+		t.Error("expected result not to be abnormal (no reference range)")
+	}
+	if result.Reference != "" {
+		t.Errorf("expected empty reference, got '%s'", result.Reference)
+	}
+}
+
+func TestRecordResult_ReportAlreadyGenerated(t *testing.T) {
+	store := setupTestStore()
+	patientID := getFirstPatientID(store)
+	itemWBC := getItemIDByName(store, "血常规-白细胞计数")
+	itemRBC := getItemIDByName(store, "血常规-红细胞计数")
+	itemALT := getItemIDByName(store, "肝功能-谷丙转氨酶")
+	pkg, _ := store.CreatePackage(&CreatePackageRequest{
+		Name:    "血液检查套餐",
+		ItemIDs: []string{itemWBC, itemRBC, itemALT},
+	})
+	date := time.Date(2026, 7, 1, 0, 0, 0, 0, time.Local)
+	start := time.Date(2026, 7, 1, 8, 0, 0, 0, time.Local)
+	end := time.Date(2026, 7, 1, 10, 0, 0, 0, time.Local)
+	slot, _ := store.CreateTimeSlot(&CreateTimeSlotRequest{
+		Date:      date,
+		StartTime: start,
+		EndTime:   end,
+		Capacity:  10,
+	})
+	appt, _ := store.CreateAppointment(&CreateAppointmentRequest{
+		PatientID:  patientID,
+		PackageID:  pkg.ID,
+		TimeSlotID: slot.ID,
+	})
+
+	store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt.ID,
+		ItemID:        itemWBC,
+		Value:         "6.5",
+	})
+	store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt.ID,
+		ItemID:        itemRBC,
+		Value:         "5.0",
+	})
+	store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt.ID,
+		ItemID:        itemALT,
+		Value:         "35",
+	})
+
+	_, err := store.GenerateReport(&GenerateReportRequest{
+		AppointmentID: appt.ID,
+	})
+	if err != nil {
+		t.Fatalf("GenerateReport failed: %v", err)
+	}
+
+	_, err = store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt.ID,
+		ItemID:        itemWBC,
+		Value:         "7.0",
+	})
+	if err != ErrReportAlreadyGenerated {
+		t.Errorf("expected ErrReportAlreadyGenerated, got %v", err)
+	}
+}
+
+func TestFullWorkflow_ZeroReferenceRange(t *testing.T) {
+	store := NewStore()
+	patientID := store.AddPatient(&Patient{Name: "测试患者"})
+
+	item1 := store.AddItem(&AddItemRequest{
+		Name:     "血氧饱和度",
+		Category: ItemCategoryLaboratory,
+		Unit:     "%",
+		MinValue: floatPtr(0),
+		MaxValue: floatPtr(100),
+		Price:    50.0,
+	})
+	item2 := store.AddItem(&AddItemRequest{
+		Name:     "心率",
+		Category: ItemCategoryFunctional,
+		Unit:     "次/分",
+		MinValue: nil,
+		MaxValue: floatPtr(100),
+		Price:    30.0,
+	})
+	item3 := store.AddItem(&AddItemRequest{
+		Name:     "舒张压",
+		Category: ItemCategoryPhysical,
+		Unit:     "mmHg",
+		MinValue: floatPtr(60),
+		MaxValue: floatPtr(90),
+		Price:    20.0,
+	})
+
+	pkg, _ := store.CreatePackage(&CreatePackageRequest{
+		Name:    "综合测试套餐",
+		ItemIDs: []string{item1.ID, item2.ID, item3.ID},
+	})
+
+	date := time.Date(2026, 7, 15, 0, 0, 0, 0, time.Local)
+	start := time.Date(2026, 7, 15, 8, 0, 0, 0, time.Local)
+	end := time.Date(2026, 7, 15, 12, 0, 0, 0, time.Local)
+	slot, _ := store.CreateTimeSlot(&CreateTimeSlotRequest{
+		Date:      date,
+		StartTime: start,
+		EndTime:   end,
+		Capacity:  50,
+	})
+	appt, _ := store.CreateAppointment(&CreateAppointmentRequest{
+		PatientID:  patientID,
+		PackageID:  pkg.ID,
+		TimeSlotID: slot.ID,
+	})
+
+	store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt.ID,
+		ItemID:        item1.ID,
+		Value:         "-5",
+		Remarks:       "偏低，仪器可能异常",
+	})
+	store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt.ID,
+		ItemID:        item2.ID,
+		Value:         "110",
+		Remarks:       "偏快",
+	})
+	store.RecordResult(&RecordResultRequest{
+		AppointmentID: appt.ID,
+		ItemID:        item3.ID,
+		Value:         "75",
+	})
+
+	report, err := store.GenerateReport(&GenerateReportRequest{
+		AppointmentID: appt.ID,
+	})
+	if err != nil {
+		t.Fatalf("GenerateReport failed: %v", err)
+	}
+	if len(report.AbnormalItems) != 2 {
+		t.Errorf("expected 2 abnormal items, got %d", len(report.AbnormalItems))
+	}
+
+	abnormalNames := make(map[string]bool)
+	for _, ai := range report.AbnormalItems {
+		abnormalNames[ai.ItemName] = true
+	}
+	if !abnormalNames["血氧饱和度"] {
+		t.Error("expected 血氧饱和度 to be abnormal")
+	}
+	if !abnormalNames["心率"] {
+		t.Error("expected 心率 to be abnormal")
+	}
+	if abnormalNames["舒张压"] {
+		t.Error("expected 舒张压 to be normal")
 	}
 }

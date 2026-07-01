@@ -1201,3 +1201,288 @@ func TestFullWorkflow(t *testing.T) {
 		t.Errorf("Expected 2 admission records in history, got %d", len(history))
 	}
 }
+
+func TestMultiCondition_ChildWithICU(t *testing.T) {
+	ba := NewBedAllocator()
+	ba.AddWard("W001", "ICU病区", "重症医学科")
+	ba.AddWard("W002", "儿科病区", "儿科")
+	ba.AddBed("W001", "B001", BedTypeICU, "ICU-01", 4)
+	ba.AddBed("W002", "B002", BedTypePediatric, "301", 5)
+	ba.AddPatient("P001", "小明", 8, "男", "icu")
+
+	admission, err := ba.AllocateBed(AllocateCriteria{
+		WardID:           "W001",
+		BedType:          "",
+		PatientID:        "P001",
+		PatientAge:       8,
+		PatientCondition: "icu",
+		AdmitTime:        time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Expected child with ICU condition to get ICU bed, got error: %v", err)
+	}
+	if admission.BedID != "B001" {
+		t.Errorf("Expected ICU bed B001 for child with ICU condition, got %s", admission.BedID)
+	}
+
+	bed, _ := ba.GetBed("B001")
+	if bed.Type != BedTypeICU {
+		t.Errorf("Expected bed type ICU, got %s", bed.Type)
+	}
+}
+
+func TestMultiCondition_SurgeryWithICU(t *testing.T) {
+	ba := NewBedAllocator()
+	ba.AddWard("W001", "ICU病区", "重症医学科")
+	ba.AddWard("W002", "外科病区", "外科")
+	ba.AddBed("W001", "B001", BedTypeICU, "ICU-01", 4)
+	ba.AddBed("W002", "B002", BedTypeSurgery, "201", 3)
+	ba.AddPatient("P001", "张三", 55, "男", "surgery")
+
+	admission, err := ba.AllocateBed(AllocateCriteria{
+		WardID:           "W001",
+		BedType:          "",
+		PatientID:        "P001",
+		PatientAge:       55,
+		PatientCondition: "surgery",
+		AdmitTime:        time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Expected surgery patient to get ICU bed for post-op care, got error: %v", err)
+	}
+	if admission.BedID != "B001" {
+		t.Errorf("Expected ICU bed B001 for surgery patient, got %s", admission.BedID)
+	}
+
+	bed, _ := ba.GetBed("B001")
+	if bed.Type != BedTypeICU {
+		t.Errorf("Expected bed type ICU, got %s", bed.Type)
+	}
+}
+
+func TestMultiCondition_SurgeryCanChooseBedType(t *testing.T) {
+	ba := NewBedAllocator()
+	ba.AddWard("W001", "外科病区", "外科")
+	ba.AddBed("W001", "B001", BedTypeSurgery, "201", 3)
+	ba.AddBed("W001", "B002", BedTypeGeneral, "202", 3)
+	ba.AddBed("W001", "B003", BedTypeICU, "ICU-01", 4)
+	ba.AddPatient("P001", "张三", 55, "男", "surgery")
+
+	admission1, err := ba.AllocateBed(AllocateCriteria{
+		WardID:           "W001",
+		BedType:          BedTypeSurgery,
+		PatientID:        "P001",
+		PatientAge:       55,
+		PatientCondition: "surgery",
+		AdmitTime:        time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Expected surgery patient to get surgery bed, got error: %v", err)
+	}
+	if admission1.BedID != "B001" {
+		t.Errorf("Expected surgery bed B001, got %s", admission1.BedID)
+	}
+
+	ba.AddPatient("P002", "李四", 60, "女", "surgery")
+	admission2, err := ba.AllocateBed(AllocateCriteria{
+		WardID:           "W001",
+		BedType:          BedTypeICU,
+		PatientID:        "P002",
+		PatientAge:       60,
+		PatientCondition: "surgery",
+		AdmitTime:        time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Expected surgery patient to get ICU bed when specified, got error: %v", err)
+	}
+	if admission2.BedID != "B003" {
+		t.Errorf("Expected ICU bed B003, got %s", admission2.BedID)
+	}
+}
+
+func TestMultiCondition_InfectiousNoIsolationBed(t *testing.T) {
+	ba := NewBedAllocator()
+	ba.AddWard("W001", "内科病区", "内科")
+	ba.AddBed("W001", "B001", BedTypeGeneral, "101", 1)
+	ba.AddBed("W001", "B002", BedTypeSurgery, "102", 1)
+	ba.AddBed("W001", "B003", BedTypeICU, "ICU-01", 2)
+	ba.AddPatient("P001", "钱七", 28, "女", "infectious")
+
+	_, err := ba.AllocateBed(AllocateCriteria{
+		WardID:           "W001",
+		BedType:          "",
+		PatientID:        "P001",
+		PatientAge:       28,
+		PatientCondition: "infectious",
+		AdmitTime:        time.Now(),
+	})
+	if err != ErrNoAvailableBed {
+		t.Errorf("Expected ErrNoAvailableBed when no isolation bed for infectious patient, got %v", err)
+	}
+
+	ba.AddBed("W001", "B004", BedTypeIsolation, "103", 2)
+	admission, err := ba.AllocateBed(AllocateCriteria{
+		WardID:           "W001",
+		BedType:          "",
+		PatientID:        "P001",
+		PatientAge:       28,
+		PatientCondition: "infectious",
+		AdmitTime:        time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Expected infectious patient to get isolation bed when available, got error: %v", err)
+	}
+	if admission.BedID != "B004" {
+		t.Errorf("Expected isolation bed B004 for infectious patient, got %s", admission.BedID)
+	}
+}
+
+func TestMultiCondition_ChildGeneralNoPediatricBed(t *testing.T) {
+	ba := NewBedAllocator()
+	ba.AddWard("W001", "内科病区", "内科")
+	ba.AddBed("W001", "B001", BedTypeGeneral, "101", 1)
+	ba.AddBed("W001", "B002", BedTypeSurgery, "102", 1)
+	ba.AddPatient("P001", "小明", 8, "男", "general")
+
+	_, err := ba.AllocateBed(AllocateCriteria{
+		WardID:           "W001",
+		BedType:          "",
+		PatientID:        "P001",
+		PatientAge:       8,
+		PatientCondition: "general",
+		AdmitTime:        time.Now(),
+	})
+	if err != ErrNoAvailableBed {
+		t.Errorf("Expected ErrNoAvailableBed for child general patient without pediatric beds, got %v", err)
+	}
+
+	ba.AddBed("W001", "B003", BedTypePediatric, "103", 1)
+	admission, err := ba.AllocateBed(AllocateCriteria{
+		WardID:           "W001",
+		BedType:          "",
+		PatientID:        "P001",
+		PatientAge:       8,
+		PatientCondition: "general",
+		AdmitTime:        time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Expected child general patient to get pediatric bed, got error: %v", err)
+	}
+	if admission.BedID != "B003" {
+		t.Errorf("Expected pediatric bed B003, got %s", admission.BedID)
+	}
+}
+
+func TestMultiCondition_SpecifiedBedTypeOverridesCondition(t *testing.T) {
+	ba := NewBedAllocator()
+	ba.AddWard("W001", "内科病区", "内科")
+	ba.AddBed("W001", "B001", BedTypeGeneral, "101", 1)
+	ba.AddBed("W001", "B002", BedTypeIsolation, "102", 1)
+	ba.AddPatient("P001", "张三", 35, "男", "general")
+
+	admission, err := ba.AllocateBed(AllocateCriteria{
+		WardID:           "W001",
+		BedType:          BedTypeIsolation,
+		PatientID:        "P001",
+		PatientAge:       35,
+		PatientCondition: "general",
+		AdmitTime:        time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Expected to get isolation bed when explicitly specified, got error: %v", err)
+	}
+	if admission.BedID != "B002" {
+		t.Errorf("Expected isolation bed B002 when explicitly specified, got %s", admission.BedID)
+	}
+
+	bed, _ := ba.GetBed("B002")
+	if bed.Type != BedTypeIsolation {
+		t.Errorf("Expected bed type isolation, got %s", bed.Type)
+	}
+}
+
+func TestMultiCondition_ChildSurgeryCanUseSurgeryBed(t *testing.T) {
+	ba := NewBedAllocator()
+	ba.AddWard("W001", "外科病区", "外科")
+	ba.AddBed("W001", "B001", BedTypeSurgery, "201", 3)
+	ba.AddBed("W001", "B002", BedTypePediatric, "202", 3)
+	ba.AddPatient("P001", "小明", 10, "男", "surgery")
+
+	admission, err := ba.AllocateBed(AllocateCriteria{
+		WardID:           "W001",
+		BedType:          "",
+		PatientID:        "P001",
+		PatientAge:       10,
+		PatientCondition: "surgery",
+		AdmitTime:        time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Expected child with surgery condition to get surgery bed, got error: %v", err)
+	}
+
+	bed, _ := ba.GetBed(admission.BedID)
+	if bed.Type != BedTypeSurgery && bed.Type != BedTypeICU && bed.Type != BedTypeGeneral {
+		t.Errorf("Expected surgery, ICU, or general bed for child surgery patient, got %s", bed.Type)
+	}
+}
+
+func TestMultiCondition_ICUHardConstraint(t *testing.T) {
+	ba := NewBedAllocator()
+	ba.AddWard("W001", "内科病区", "内科")
+	ba.AddBed("W001", "B001", BedTypeGeneral, "101", 1)
+	ba.AddBed("W001", "B002", BedTypeSurgery, "102", 1)
+	ba.AddBed("W001", "B003", BedTypeIsolation, "103", 1)
+	ba.AddBed("W001", "B004", BedTypePediatric, "104", 1)
+	ba.AddPatient("P001", "张三", 55, "男", "icu")
+
+	_, err := ba.AllocateBed(AllocateCriteria{
+		WardID:           "W001",
+		BedType:          "",
+		PatientID:        "P001",
+		PatientAge:       55,
+		PatientCondition: "icu",
+		AdmitTime:        time.Now(),
+	})
+	if err != ErrNoAvailableBed {
+		t.Errorf("Expected ErrNoAvailableBed when no ICU bed for ICU patient, got %v", err)
+	}
+
+	ba.AddBed("W001", "B005", BedTypeICU, "ICU-01", 2)
+	admission, err := ba.AllocateBed(AllocateCriteria{
+		WardID:           "W001",
+		BedType:          "",
+		PatientID:        "P001",
+		PatientAge:       55,
+		PatientCondition: "icu",
+		AdmitTime:        time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Expected ICU patient to get ICU bed, got error: %v", err)
+	}
+	if admission.BedID != "B005" {
+		t.Errorf("Expected ICU bed B005, got %s", admission.BedID)
+	}
+}
+
+func TestMultiCondition_GeneralPatientCanUseSurgeryBed(t *testing.T) {
+	ba := NewBedAllocator()
+	ba.AddWard("W001", "外科病区", "外科")
+	ba.AddBed("W001", "B001", BedTypeSurgery, "201", 3)
+	ba.AddPatient("P001", "张三", 45, "男", "general")
+
+	admission, err := ba.AllocateBed(AllocateCriteria{
+		WardID:           "W001",
+		BedType:          "",
+		PatientID:        "P001",
+		PatientAge:       45,
+		PatientCondition: "general",
+		AdmitTime:        time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Expected general patient to be able to use surgery bed, got error: %v", err)
+	}
+	if admission.BedID != "B001" {
+		t.Errorf("Expected surgery bed B001 for general patient, got %s", admission.BedID)
+	}
+}
+

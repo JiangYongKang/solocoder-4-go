@@ -1,6 +1,9 @@
 package appointment
 
 import (
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -928,7 +931,7 @@ func TestChangeAppointment_SameSlot(t *testing.T) {
 
 	_, err = svc.ChangeAppointment(&ChangeAppointmentRequest{
 		AppointmentID: appt.ID,
-		NewSlotID:     appt.ID,
+		NewSlotID:     ctx.Slot1ID,
 		PatientID:     ctx.Patient1ID,
 	})
 
@@ -1852,5 +1855,129 @@ func TestFullWorkflow(t *testing.T) {
 
 	if patient3Appts != 1 {
 		t.Fatalf("Step 5 expected patient3 auto-filled appointment, count=%d", patient3Appts)
+	}
+}
+
+func TestConcurrentAppointment_NoOversell(t *testing.T) {
+	ctx, _ := setupTestStoreWithMockTime()
+	svc := ctx.Service
+
+	slotID := ctx.Slot1ID
+	slot, err := svc.GetSlot(slotID)
+	if err != nil {
+		t.Fatalf("GetSlot failed: %v", err)
+	}
+
+	capacity := slot.TotalCapacity
+	numGoroutines := capacity * 5
+
+	patientIDs := make([]string, numGoroutines)
+	for i := 0; i < numGoroutines; i++ {
+		patientID := ctx.Store.generateID("PAT")
+		ctx.Store.patients[patientID] = &Patient{
+			ID:   patientID,
+			Name: fmt.Sprintf("Patient%d", i),
+		}
+		patientIDs[i] = patientID
+	}
+
+	var wg sync.WaitGroup
+	successCount := int64(0)
+	failCount := int64(0)
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(pid string) {
+			defer wg.Done()
+			_, err := svc.CreateAppointment(&CreateAppointmentRequest{
+				SlotID:    slotID,
+				PatientID: pid,
+			})
+			if err == nil {
+				atomic.AddInt64(&successCount, 1)
+			} else {
+				atomic.AddInt64(&failCount, 1)
+			}
+		}(patientIDs[i])
+	}
+
+	wg.Wait()
+
+	slotAfter, err := svc.GetSlot(slotID)
+	if err != nil {
+		t.Fatalf("GetSlot after concurrent appointments failed: %v", err)
+	}
+
+	if slotAfter.BookedCount > capacity {
+		t.Errorf("BookedCount %d exceeds capacity %d - oversell occurred!", slotAfter.BookedCount, capacity)
+	}
+
+	if slotAfter.BookedCount != capacity {
+		t.Errorf("BookedCount %d does not equal capacity %d", slotAfter.BookedCount, capacity)
+	}
+
+	if successCount != int64(capacity) {
+		t.Errorf("Expected %d successful appointments, got %d", capacity, successCount)
+	}
+
+	if failCount != int64(numGoroutines-capacity) {
+		t.Errorf("Expected %d failed appointments, got %d", numGoroutines-capacity, failCount)
+	}
+
+	if successCount+failCount != int64(numGoroutines) {
+		t.Errorf("Total count mismatch: success=%d + fail=%d = %d, expected %d", successCount, failCount, successCount+failCount, numGoroutines)
+	}
+}
+
+func TestConcurrentAppointment_MultipleSlots(t *testing.T) {
+	ctx, _ := setupTestStoreWithMockTime()
+	svc := ctx.Service
+
+	slotIDs := []string{ctx.Slot1ID, ctx.Slot2ID, ctx.Slot3ID}
+	totalCapacity := 0
+	for _, sid := range slotIDs {
+		slot, _ := svc.GetSlot(sid)
+		totalCapacity += slot.TotalCapacity
+	}
+
+	numGoroutines := totalCapacity * 3
+	patientIDs := make([]string, numGoroutines)
+	for i := 0; i < numGoroutines; i++ {
+		patientID := ctx.Store.generateID("PAT")
+		ctx.Store.patients[patientID] = &Patient{
+			ID:   patientID,
+			Name: fmt.Sprintf("Patient%d", i),
+		}
+		patientIDs[i] = patientID
+	}
+
+	var wg sync.WaitGroup
+	successCount := int64(0)
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(pid string, slotIdx int) {
+			defer wg.Done()
+			_, err := svc.CreateAppointment(&CreateAppointmentRequest{
+				SlotID:    slotIDs[slotIdx%len(slotIDs)],
+				PatientID: pid,
+			})
+			if err == nil {
+				atomic.AddInt64(&successCount, 1)
+			}
+		}(patientIDs[i], i)
+	}
+
+	wg.Wait()
+
+	for _, sid := range slotIDs {
+		slot, _ := svc.GetSlot(sid)
+		if slot.BookedCount > slot.TotalCapacity {
+			t.Errorf("Slot %s: BookedCount %d exceeds capacity %d", sid, slot.BookedCount, slot.TotalCapacity)
+		}
+	}
+
+	if successCount > int64(totalCapacity) {
+		t.Errorf("Total success %d exceeds total capacity %d", successCount, totalCapacity)
 	}
 }

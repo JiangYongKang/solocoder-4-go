@@ -1,0 +1,5 @@
+你实现的班级考勤管理模块存在以下问题需要修复：
+1. calculateStatus 方法在同时出现迟到和早退的情况下（isLate 和 isEarlyLeave 均为 true），直接返回 `StatusEarlyLeave` 而丢失了迟到信息。提示词要求根据签到签退时间判断正常、迟到、早退或缺勤状态，这意味着迟到和早退是两种不同的考勤异常，当它们同时发生时应该都能被识别和记录，不能被一种状态覆盖另一种。考勤汇总中迟到和早退的统计也应分别计入，确保出勤情况的完整反映。
+2. calculateStatus 方法中迟到和早退的判定使用了纳秒精度的时间比较，如 `checkInTime.Before(ruleCheckInEnd.Add(time.Nanosecond))` 和 `checkOutTime.After(ruleCheckOutStart.Add(-time.Nanosecond))`。当学生恰好在考勤规则的阈值临界点上操作时，判定结果受纳秒级别的精度影响，相同的时钟时刻（例如 09:00:00）可能因为内部纳秒值不同而产生不同的判定结果。需要将时间比较统一截断到分钟精度，确保相同时钟时刻的判定结果一致。
+3. 修复后需要补充迟到且早退复合状态被正确识别和统计的测试用例，以及时间边界精度一致的测试用例。
+4. 运行 go test ./internal/attendance/ -v，需要让所有测试通过。

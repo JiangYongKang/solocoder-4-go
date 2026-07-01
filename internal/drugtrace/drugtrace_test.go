@@ -2,6 +2,7 @@ package drugtrace
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -711,6 +712,339 @@ func TestBatchStatusString(t *testing.T) {
 	for _, tt := range tests {
 		if got := tt.status.String(); got != tt.want {
 			t.Errorf("BatchStatus(%d).String() = %v, want %v", tt.status, got, tt.want)
+		}
+	}
+}
+
+func TestDateOnlyHelper(t *testing.T) {
+	t1 := time.Date(2024, 6, 15, 14, 30, 45, 123456789, time.Local)
+	result := dateOnly(t1)
+	expected := time.Date(2024, 6, 15, 0, 0, 0, 0, time.Local)
+	if !result.Equal(expected) {
+		t.Errorf("dateOnly() = %v, want %v", result, expected)
+	}
+}
+
+func TestIsDateExpired(t *testing.T) {
+	today := time.Date(2024, 6, 15, 10, 0, 0, 0, time.Local)
+
+	tests := []struct {
+		name     string
+		expiry   time.Time
+		asOf     time.Time
+		expected bool
+	}{
+		{
+			name:     "expiry before asOf date - expired",
+			expiry:   time.Date(2024, 6, 14, 23, 59, 59, 999999999, time.Local),
+			asOf:     today,
+			expected: true,
+		},
+		{
+			name:     "expiry same day as asOf - not expired",
+			expiry:   time.Date(2024, 6, 15, 0, 0, 0, 0, time.Local),
+			asOf:     today,
+			expected: false,
+		},
+		{
+			name:     "expiry same day different time - not expired",
+			expiry:   time.Date(2024, 6, 15, 23, 59, 59, 999999999, time.Local),
+			asOf:     today,
+			expected: false,
+		},
+		{
+			name:     "expiry day after asOf - not expired",
+			expiry:   time.Date(2024, 6, 16, 0, 0, 0, 0, time.Local),
+			asOf:     today,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isDateExpired(tt.expiry, tt.asOf)
+			if result != tt.expected {
+				t.Errorf("isDateExpired(%v, %v) = %v, want %v", tt.expiry, tt.asOf, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsDateWithinDays(t *testing.T) {
+	today := time.Date(2024, 6, 15, 10, 0, 0, 0, time.Local)
+
+	tests := []struct {
+		name     string
+		expiry   time.Time
+		days     int
+		expected bool
+	}{
+		{
+			name:     "expiry today - within 0 days",
+			expiry:   time.Date(2024, 6, 15, 23, 59, 59, 999999999, time.Local),
+			days:     0,
+			expected: true,
+		},
+		{
+			name:     "expiry in 30 days - within 30 days",
+			expiry:   time.Date(2024, 7, 15, 0, 0, 0, 0, time.Local),
+			days:     30,
+			expected: true,
+		},
+		{
+			name:     "expiry in 31 days - not within 30 days",
+			expiry:   time.Date(2024, 7, 16, 0, 0, 0, 0, time.Local),
+			days:     30,
+			expected: false,
+		},
+		{
+			name:     "expiry yesterday - within 30 days",
+			expiry:   time.Date(2024, 6, 14, 23, 59, 59, 999999999, time.Local),
+			days:     30,
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isDateWithinDays(tt.expiry, today, tt.days)
+			if result != tt.expected {
+				t.Errorf("isDateWithinDays(%v, today, %d) = %v, want %v", tt.expiry, tt.days, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestOutboundSameDayExpiry(t *testing.T) {
+	s := NewDrugTraceService()
+	_ = s.AddDrug("DRUG001", "阿莫西林胶囊", "0.5g*24粒")
+
+	today := time.Now()
+	todayEvening := time.Date(today.Year(), today.Month(), today.Day(), 23, 59, 59, 999999999, today.Location())
+	tomorrow := today.AddDate(0, 0, 1)
+
+	_ = s.InboundBatch("DRUG001", "B_TODAY", 100,
+		today.AddDate(-1, 0, 0), todayEvening, "供应商A", "张三")
+	_ = s.InboundBatch("DRUG001", "B_TOMORROW", 100,
+		today.AddDate(-1, 0, 0), tomorrow, "供应商A", "张三")
+
+	batch, err := s.GetBatch("B_TODAY")
+	if err != nil {
+		t.Fatalf("GetBatch failed: %v", err)
+	}
+	if batch.Status != BatchStatusNormal {
+		t.Errorf("batch expiring today should be Normal, got %v", batch.Status)
+	}
+
+	result, err := s.OutboundFIFO("DRUG001", 80, "内科", "患者A", "李四")
+	if err != nil {
+		t.Fatalf("OutboundFIFO failed: %v", err)
+	}
+	if result.TotalQty != 80 {
+		t.Errorf("expected 80, got %d", result.TotalQty)
+	}
+	if result.Details[0].BatchNumber != "B_TODAY" {
+		t.Errorf("should use today's expiry batch first, got %s", result.Details[0].BatchNumber)
+	}
+
+	bToday, _ := s.GetBatch("B_TODAY")
+	if bToday.RemainingQty != 20 {
+		t.Errorf("expected 20 remaining, got %d", bToday.RemainingQty)
+	}
+}
+
+func TestOutboundDayAfterExpiry(t *testing.T) {
+	s := NewDrugTraceService()
+	_ = s.AddDrug("DRUG001", "阿莫西林胶囊", "0.5g*24粒")
+
+	today := time.Now()
+	yesterdayEvening := time.Date(today.Year(), today.Month(), today.Day()-1, 23, 59, 59, 999999999, today.Location())
+	tomorrow := today.AddDate(0, 0, 1)
+
+	_ = s.InboundBatch("DRUG001", "B_YESTERDAY", 100,
+		today.AddDate(-1, 0, 0), yesterdayEvening, "供应商A", "张三")
+	_ = s.InboundBatch("DRUG001", "B_TOMORROW", 100,
+		today.AddDate(-1, 0, 0), tomorrow, "供应商A", "张三")
+
+	batch, err := s.GetBatch("B_YESTERDAY")
+	if err != nil {
+		t.Fatalf("GetBatch failed: %v", err)
+	}
+	if batch.Status != BatchStatusExpired {
+		t.Errorf("batch expired yesterday should be Expired, got %v", batch.Status)
+	}
+
+	result, err := s.OutboundFIFO("DRUG001", 80, "内科", "患者A", "李四")
+	if err != nil {
+		t.Fatalf("OutboundFIFO failed: %v", err)
+	}
+	if result.TotalQty != 80 {
+		t.Errorf("expected 80, got %d", result.TotalQty)
+	}
+	if result.Details[0].BatchNumber != "B_TOMORROW" {
+		t.Errorf("should use tomorrow's expiry batch, got %s", result.Details[0].BatchNumber)
+	}
+
+	bYesterday, _ := s.GetBatch("B_YESTERDAY")
+	if bYesterday.RemainingQty != 100 {
+		t.Errorf("expired batch should not be used, remaining should be 100, got %d", bYesterday.RemainingQty)
+	}
+}
+
+func TestCrossMidnightExpiryBoundary(t *testing.T) {
+	s := NewDrugTraceService()
+	_ = s.AddDrug("DRUG001", "阿莫西林胶囊", "0.5g*24粒")
+
+	today := time.Now()
+	expiryDate := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, today.Location())
+
+	_ = s.InboundBatch("DRUG001", "B1", 100,
+		today.AddDate(-1, 0, 0), expiryDate, "供应商A", "张三")
+
+	batch, err := s.GetBatch("B1")
+	if err != nil {
+		t.Fatalf("GetBatch failed: %v", err)
+	}
+	if batch.Status != BatchStatusNormal {
+		t.Errorf("batch expiring at midnight today should be Normal, got %v", batch.Status)
+	}
+
+	result, err := s.OutboundFIFO("DRUG001", 50, "内科", "患者A", "李四")
+	if err != nil {
+		t.Fatalf("OutboundFIFO failed: %v", err)
+	}
+	if result.TotalQty != 50 {
+		t.Errorf("expected 50, got %d", result.TotalQty)
+	}
+
+	stock, _ := s.GetDrugStock("DRUG001")
+	if stock != 50 {
+		t.Errorf("expected 50 stock remaining, got %d", stock)
+	}
+}
+
+func TestUpdateBatchStatusDatePrecision(t *testing.T) {
+	s := NewDrugTraceService()
+	_ = s.AddDrug("DRUG001", "阿莫西林胶囊", "0.5g*24粒")
+
+	today := time.Now()
+	todayEvening := time.Date(today.Year(), today.Month(), today.Day(), 23, 59, 59, 999999999, today.Location())
+	yesterdayEvening := time.Date(today.Year(), today.Month(), today.Day()-1, 23, 59, 59, 999999999, today.Location())
+	tomorrow := today.AddDate(0, 0, 1)
+
+	_ = s.InboundBatch("DRUG001", "B_TODAY", 100,
+		today.AddDate(-1, 0, 0), todayEvening, "供应商A", "张三")
+	_ = s.InboundBatch("DRUG001", "B_YESTERDAY", 100,
+		today.AddDate(-2, 0, 0), yesterdayEvening, "供应商A", "张三")
+	_ = s.InboundBatch("DRUG001", "B_TOMORROW", 100,
+		today.AddDate(-1, 0, 0), tomorrow, "供应商A", "张三")
+
+	bToday, _ := s.GetBatch("B_TODAY")
+	bToday.Status = BatchStatusNormal
+	bYesterday, _ := s.GetBatch("B_YESTERDAY")
+	bYesterday.Status = BatchStatusNormal
+
+	s.UpdateBatchStatus()
+
+	bToday, _ = s.GetBatch("B_TODAY")
+	if bToday.Status != BatchStatusNormal {
+		t.Errorf("B_TODAY should still be Normal after UpdateBatchStatus, got %v", bToday.Status)
+	}
+
+	bYesterday, _ = s.GetBatch("B_YESTERDAY")
+	if bYesterday.Status != BatchStatusExpired {
+		t.Errorf("B_YESTERDAY should be Expired after UpdateBatchStatus, got %v", bYesterday.Status)
+	}
+
+	bTomorrow, _ := s.GetBatch("B_TOMORROW")
+	if bTomorrow.Status != BatchStatusNormal {
+		t.Errorf("B_TOMORROW should be Normal, got %v", bTomorrow.Status)
+	}
+}
+
+func TestGetExpiredBatchesDatePrecision(t *testing.T) {
+	s := NewDrugTraceService()
+	_ = s.AddDrug("DRUG001", "阿莫西林胶囊", "0.5g*24粒")
+
+	today := time.Now()
+	todayEvening := time.Date(today.Year(), today.Month(), today.Day(), 23, 59, 59, 999999999, today.Location())
+	yesterdayEvening := time.Date(today.Year(), today.Month(), today.Day()-1, 23, 59, 59, 999999999, today.Location())
+
+	_ = s.InboundBatch("DRUG001", "B_TODAY", 100,
+		today.AddDate(-1, 0, 0), todayEvening, "供应商A", "张三")
+	_ = s.InboundBatch("DRUG001", "B_YESTERDAY", 100,
+		today.AddDate(-2, 0, 0), yesterdayEvening, "供应商A", "张三")
+
+	bToday, _ := s.GetBatch("B_TODAY")
+	bToday.Status = BatchStatusNormal
+
+	result, err := s.GetExpiredBatches()
+	if err != nil {
+		t.Fatalf("GetExpiredBatches failed: %v", err)
+	}
+	if len(result) != 1 {
+		t.Errorf("expected 1 expired batch, got %d", len(result))
+	}
+	if result[0].BatchNumber != "B_YESTERDAY" {
+		t.Errorf("expected B_YESTERDAY, got %s", result[0].BatchNumber)
+	}
+}
+
+func TestGetExpiringBatchesDatePrecision(t *testing.T) {
+	s := NewDrugTraceService()
+	_ = s.AddDrug("DRUG001", "阿莫西林胶囊", "0.5g*24粒")
+
+	today := time.Now()
+	todayEvening := time.Date(today.Year(), today.Month(), today.Day(), 23, 59, 59, 999999999, today.Location())
+	in30Days := today.AddDate(0, 0, 30)
+	in31Days := today.AddDate(0, 0, 31)
+
+	_ = s.InboundBatch("DRUG001", "B_TODAY", 100,
+		today.AddDate(-1, 0, 0), todayEvening, "供应商A", "张三")
+	_ = s.InboundBatch("DRUG001", "B_30DAYS", 100,
+		today.AddDate(-1, 0, 0), in30Days, "供应商A", "张三")
+	_ = s.InboundBatch("DRUG001", "B_31DAYS", 100,
+		today.AddDate(-1, 0, 0), in31Days, "供应商A", "张三")
+
+	result, err := s.GetExpiringBatches(30)
+	if err != nil {
+		t.Fatalf("GetExpiringBatches failed: %v", err)
+	}
+	if len(result) != 2 {
+		t.Errorf("expected 2 expiring batches, got %d", len(result))
+	}
+}
+
+func TestOutboundConsistentTimeBase(t *testing.T) {
+	s := NewDrugTraceService()
+	_ = s.AddDrug("DRUG001", "阿莫西林胶囊", "0.5g*24粒")
+
+	today := time.Now()
+	todayEvening := time.Date(today.Year(), today.Month(), today.Day(), 23, 59, 59, 999999999, today.Location())
+	tomorrow := today.AddDate(0, 0, 1)
+
+	for i := 0; i < 20; i++ {
+		batchNo := fmt.Sprintf("B_%d", i)
+		expiry := todayEvening
+		if i%2 == 0 {
+			expiry = tomorrow
+		}
+		_ = s.InboundBatch("DRUG001", batchNo, 10,
+			today.AddDate(-1, 0, 0), expiry, "供应商A", "张三")
+	}
+
+	result, err := s.OutboundFIFO("DRUG001", 150, "内科", "患者A", "李四")
+	if err != nil {
+		t.Fatalf("OutboundFIFO failed: %v", err)
+	}
+	if result.TotalQty != 150 {
+		t.Errorf("expected 150, got %d", result.TotalQty)
+	}
+
+	for _, detail := range result.Details {
+		if !detail.OutboundTime.Equal(result.Details[0].OutboundTime) {
+			t.Errorf("all outbound details should have the same timestamp, got %v vs %v",
+				detail.OutboundTime, result.Details[0].OutboundTime)
 		}
 	}
 }

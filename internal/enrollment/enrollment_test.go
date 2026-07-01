@@ -723,7 +723,7 @@ func TestWaitlist_MultipleStudents(t *testing.T) {
 	}
 }
 
-func TestWaitlist_PromotionSkipsIneligibleStudents(t *testing.T) {
+func TestEnroll_WaitlistBlocksIneligibleStudents(t *testing.T) {
 	store := setupTestStore()
 
 	store.AddStudent(&Student{
@@ -736,7 +736,7 @@ func TestWaitlist_PromotionSkipsIneligibleStudents(t *testing.T) {
 		ID:               "S005",
 		Name:             "Eve",
 		CompletedCourses: map[string]bool{"C001": true},
-		MaxCredits:       20,
+		MaxCredits:       3,
 	})
 
 	_, err := store.Enroll("S001", "C002")
@@ -749,51 +749,33 @@ func TestWaitlist_PromotionSkipsIneligibleStudents(t *testing.T) {
 	}
 
 	_, err = store.Enroll("S004", "C002")
-	if err != ErrCourseFull {
-		t.Fatalf("S004 should be waitlisted, got %v", err)
+	if err != ErrPrerequisiteNotCompleted {
+		t.Fatalf("Expected S004 to be rejected for prerequisite, got %v", err)
 	}
+
 	_, err = store.Enroll("S005", "C002")
-	if err != ErrCourseFull {
-		t.Fatalf("S005 should be waitlisted, got %v", err)
-	}
-
-	pos4, _ := store.GetWaitlistPosition("S004", "C002")
-	pos5, _ := store.GetWaitlistPosition("S005", "C002")
-	if pos4 != 1 || pos5 != 2 {
-		t.Errorf("Expected positions S004=1, S005=2, got %d and %d", pos4, pos5)
-	}
-
-	promoted, err := store.Drop("S001", "C002")
-	if err != nil {
-		t.Fatalf("Drop failed: %v", err)
-	}
-
-	if len(promoted) != 1 {
-		t.Fatalf("Expected 1 promoted student, got %d", len(promoted))
-	}
-	if promoted[0].StudentID != "S005" {
-		t.Errorf("Expected S005 (eligible) to be promoted, not S004 (ineligible), got %v", promoted[0].StudentID)
+	if err != ErrMaxCreditsExceeded {
+		t.Fatalf("Expected S005 to be rejected for credit limit, got %v", err)
 	}
 
 	_, err = store.GetWaitlistPosition("S004", "C002")
 	if err != ErrNotInWaitlist {
-		t.Errorf("Expected S004 to be removed from waitlist (ineligible), got %v", err)
+		t.Errorf("Expected S004 to NOT be in waitlist, got %v", err)
 	}
-
 	_, err = store.GetWaitlistPosition("S005", "C002")
 	if err != ErrNotInWaitlist {
-		t.Errorf("Expected S005 to be promoted, got %v", err)
+		t.Errorf("Expected S005 to NOT be in waitlist, got %v", err)
 	}
 }
 
-func TestWaitlist_PromotionSkipsCreditLimit(t *testing.T) {
+func TestWaitlist_IneligibleStudentsKeptInQueue(t *testing.T) {
 	store := setupTestStore()
 
 	store.AddStudent(&Student{
 		ID:               "S004",
 		Name:             "David",
 		CompletedCourses: map[string]bool{"C001": true},
-		MaxCredits:       3,
+		MaxCredits:       20,
 	})
 	store.AddStudent(&Student{
 		ID:               "S005",
@@ -810,7 +792,6 @@ func TestWaitlist_PromotionSkipsCreditLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("S002 enrollment failed: %v", err)
 	}
-
 	_, err = store.Enroll("S004", "C002")
 	if err != ErrCourseFull {
 		t.Fatalf("S004 should be waitlisted, got %v", err)
@@ -819,6 +800,69 @@ func TestWaitlist_PromotionSkipsCreditLimit(t *testing.T) {
 	if err != ErrCourseFull {
 		t.Fatalf("S005 should be waitlisted, got %v", err)
 	}
+
+	store.students["S004"].CompletedCourses = map[string]bool{}
+	store.students["S005"].MaxCredits = 3
+
+	promoted, err := store.Drop("S001", "C002")
+	if err != nil {
+		t.Fatalf("Drop failed: %v", err)
+	}
+
+	if len(promoted) != 0 {
+		t.Errorf("Expected no promotions (all temporarily ineligible), got %d", len(promoted))
+	}
+
+	pos4, err := store.GetWaitlistPosition("S004", "C002")
+	if err != nil {
+		t.Fatalf("Expected S004 to still be in waitlist, got %v", err)
+	}
+	if pos4 != 1 {
+		t.Errorf("Expected S004 at position 1 (order preserved after round-robin skip), got %d", pos4)
+	}
+	pos5, err := store.GetWaitlistPosition("S005", "C002")
+	if err != nil {
+		t.Fatalf("Expected S005 to still be in waitlist, got %v", err)
+	}
+	if pos5 != 2 {
+		t.Errorf("Expected S005 at position 2, got %d", pos5)
+	}
+}
+
+func TestWaitlist_PromotionSkipsCreditLimitKeepsInQueue(t *testing.T) {
+	store := setupTestStore()
+
+	store.AddStudent(&Student{
+		ID:               "S004",
+		Name:             "David",
+		CompletedCourses: map[string]bool{"C001": true},
+		MaxCredits:       20,
+	})
+	store.AddStudent(&Student{
+		ID:               "S005",
+		Name:             "Eve",
+		CompletedCourses: map[string]bool{"C001": true},
+		MaxCredits:       20,
+	})
+
+	_, err := store.Enroll("S001", "C002")
+	if err != nil {
+		t.Fatalf("S001 enrollment failed: %v", err)
+	}
+	_, err = store.Enroll("S002", "C002")
+	if err != nil {
+		t.Fatalf("S002 enrollment failed: %v", err)
+	}
+	_, err = store.Enroll("S004", "C002")
+	if err != ErrCourseFull {
+		t.Fatalf("S004 should be waitlisted, got %v", err)
+	}
+	_, err = store.Enroll("S005", "C002")
+	if err != ErrCourseFull {
+		t.Fatalf("S005 should be waitlisted, got %v", err)
+	}
+
+	store.students["S004"].MaxCredits = 3
 
 	promoted, err := store.Drop("S001", "C002")
 	if err != nil {
@@ -830,6 +874,196 @@ func TestWaitlist_PromotionSkipsCreditLimit(t *testing.T) {
 	}
 	if promoted[0].StudentID != "S005" {
 		t.Errorf("Expected S005 to be promoted (S004 has credit limit), got %v", promoted[0].StudentID)
+	}
+
+	pos4, err := store.GetWaitlistPosition("S004", "C002")
+	if err != nil {
+		t.Fatalf("Expected S004 to still be in waitlist, got %v", err)
+	}
+	if pos4 != 1 {
+		t.Errorf("Expected S004 at position 1 (kept in queue after skipping), got %d", pos4)
+	}
+}
+
+func TestWaitlist_ConditionSatisfiedLaterPromotion(t *testing.T) {
+	store := setupTestStore()
+
+	store.AddStudent(&Student{
+		ID:               "S004",
+		Name:             "David",
+		CompletedCourses: map[string]bool{"C001": true},
+		MaxCredits:       20,
+	})
+
+	_, err := store.Enroll("S001", "C002")
+	if err != nil {
+		t.Fatalf("S001 enrollment failed: %v", err)
+	}
+	_, err = store.Enroll("S002", "C002")
+	if err != nil {
+		t.Fatalf("S002 enrollment failed: %v", err)
+	}
+	_, err = store.Enroll("S004", "C002")
+	if err != ErrCourseFull {
+		t.Fatalf("S004 should be waitlisted, got %v", err)
+	}
+
+	store.students["S004"].MaxCredits = 3
+
+	promoted, err := store.Drop("S001", "C002")
+	if err != nil {
+		t.Fatalf("First drop failed: %v", err)
+	}
+	if len(promoted) != 0 {
+		t.Errorf("Expected no promotion (S004 temporarily has low credits), got %d", len(promoted))
+	}
+
+	pos4, err := store.GetWaitlistPosition("S004", "C002")
+	if err != nil {
+		t.Fatalf("Expected S004 to still be in waitlist, got %v", err)
+	}
+	if pos4 != 1 {
+		t.Errorf("Expected S004 at position 1 (kept in queue), got %d", pos4)
+	}
+
+	store.students["S004"].MaxCredits = 20
+
+	promoted, err = store.Drop("S002", "C002")
+	if err != nil {
+		t.Fatalf("Second drop failed: %v", err)
+	}
+	if len(promoted) != 1 {
+		t.Fatalf("Expected 1 promotion (S004 now satisfies conditions), got %d", len(promoted))
+	}
+	if promoted[0].StudentID != "S004" {
+		t.Errorf("Expected S004 to be promoted now that credits are sufficient, got %v", promoted[0].StudentID)
+	}
+
+	_, err = store.GetWaitlistPosition("S004", "C002")
+	if err != ErrNotInWaitlist {
+		t.Errorf("Expected S004 to be removed from waitlist after promotion, got %v", err)
+	}
+
+	courses, err := store.GetEnrolledCourses("S004")
+	if err != nil {
+		t.Fatalf("GetEnrolledCourses failed: %v", err)
+	}
+	found := false
+	for _, c := range courses {
+		if c.ID == "C002" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Expected S004 to be enrolled in C002 after condition was satisfied")
+	}
+}
+
+func TestWaitlist_PrerequisiteSatisfiedLaterPromotion(t *testing.T) {
+	store := setupTestStore()
+
+	store.AddStudent(&Student{
+		ID:               "S004",
+		Name:             "David",
+		CompletedCourses: map[string]bool{"C001": true},
+		MaxCredits:       20,
+	})
+
+	_, err := store.Enroll("S001", "C002")
+	if err != nil {
+		t.Fatalf("S001 enrollment failed: %v", err)
+	}
+	_, err = store.Enroll("S002", "C002")
+	if err != nil {
+		t.Fatalf("S002 enrollment failed: %v", err)
+	}
+	_, err = store.Enroll("S004", "C002")
+	if err != ErrCourseFull {
+		t.Fatalf("S004 should be waitlisted, got %v", err)
+	}
+
+	store.students["S004"].CompletedCourses = map[string]bool{}
+
+	promoted, err := store.Drop("S001", "C002")
+	if err != nil {
+		t.Fatalf("First drop failed: %v", err)
+	}
+	if len(promoted) != 0 {
+		t.Errorf("Expected no promotion (S004 temporarily missing prerequisite), got %d", len(promoted))
+	}
+
+	pos4, err := store.GetWaitlistPosition("S004", "C002")
+	if err != nil {
+		t.Fatalf("Expected S004 to still be in waitlist, got %v", err)
+	}
+	if pos4 != 1 {
+		t.Errorf("Expected S004 at position 1 (kept in queue), got %d", pos4)
+	}
+
+	store.students["S004"].CompletedCourses = map[string]bool{"C001": true}
+
+	promoted, err = store.Drop("S002", "C002")
+	if err != nil {
+		t.Fatalf("Second drop failed: %v", err)
+	}
+	if len(promoted) != 1 {
+		t.Fatalf("Expected 1 promotion (S004 now has prerequisites), got %d", len(promoted))
+	}
+	if promoted[0].StudentID != "S004" {
+		t.Errorf("Expected S004 to be promoted now that prerequisites are satisfied, got %v", promoted[0].StudentID)
+	}
+
+	_, err = store.GetWaitlistPosition("S004", "C002")
+	if err != ErrNotInWaitlist {
+		t.Errorf("Expected S004 to be removed from waitlist after promotion, got %v", err)
+	}
+}
+
+func TestWaitlist_RemovedStudentCleanedUp(t *testing.T) {
+	store := setupTestStore()
+
+	store.AddStudent(&Student{
+		ID:               "S004",
+		Name:             "David",
+		CompletedCourses: map[string]bool{"C001": true},
+		MaxCredits:       20,
+	})
+	store.AddStudent(&Student{
+		ID:               "S005",
+		Name:             "Eve",
+		CompletedCourses: map[string]bool{"C001": true},
+		MaxCredits:       20,
+	})
+
+	_, err := store.Enroll("S001", "C002")
+	if err != nil {
+		t.Fatalf("S001 enrollment failed: %v", err)
+	}
+	_, err = store.Enroll("S002", "C002")
+	if err != nil {
+		t.Fatalf("S002 enrollment failed: %v", err)
+	}
+	_, err = store.Enroll("S004", "C002")
+	if err != ErrCourseFull {
+		t.Fatalf("S004 should be waitlisted, got %v", err)
+	}
+	_, err = store.Enroll("S005", "C002")
+	if err != ErrCourseFull {
+		t.Fatalf("S005 should be waitlisted, got %v", err)
+	}
+
+	delete(store.students, "S004")
+
+	promoted, err := store.Drop("S001", "C002")
+	if err != nil {
+		t.Fatalf("Drop failed: %v", err)
+	}
+	if len(promoted) != 1 {
+		t.Fatalf("Expected 1 promotion (S004 removed, skip to S005), got %d", len(promoted))
+	}
+	if promoted[0].StudentID != "S005" {
+		t.Errorf("Expected S005 to be promoted, got %v", promoted[0].StudentID)
 	}
 }
 

@@ -25,11 +25,12 @@ var (
 type AttendanceStatus string
 
 const (
-	StatusPresent    AttendanceStatus = "PRESENT"
-	StatusLate       AttendanceStatus = "LATE"
-	StatusEarlyLeave AttendanceStatus = "EARLY_LEAVE"
-	StatusAbsent     AttendanceStatus = "ABSENT"
-	StatusLeave      AttendanceStatus = "LEAVE"
+	StatusPresent           AttendanceStatus = "PRESENT"
+	StatusLate              AttendanceStatus = "LATE"
+	StatusEarlyLeave        AttendanceStatus = "EARLY_LEAVE"
+	StatusLateAndEarlyLeave AttendanceStatus = "LATE_AND_EARLY_LEAVE"
+	StatusAbsent            AttendanceStatus = "ABSENT"
+	StatusLeave             AttendanceStatus = "LEAVE"
 )
 
 type LeaveStatus string
@@ -111,6 +112,8 @@ type AttendanceRecord struct {
 	CheckInTime   *time.Time
 	CheckOutTime  *time.Time
 	Status        AttendanceStatus
+	IsLate        bool
+	IsEarlyLeave  bool
 	IsLeave       bool
 	LeaveID       string
 	CalculatedAt  time.Time

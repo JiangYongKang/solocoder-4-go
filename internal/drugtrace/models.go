@@ -102,3 +102,18 @@ func (s *BatchStatus) String() string {
 		return "unknown"
 	}
 }
+
+func dateOnly(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
+func isDateExpired(expiryDate, asOf time.Time) bool {
+	return dateOnly(expiryDate).Before(dateOnly(asOf))
+}
+
+func isDateWithinDays(expiryDate, asOf time.Time, days int) bool {
+	expiryDateOnly := dateOnly(expiryDate)
+	asOfOnly := dateOnly(asOf)
+	cutoff := asOfOnly.AddDate(0, 0, days)
+	return expiryDateOnly.Before(cutoff) || expiryDateOnly.Equal(cutoff)
+}

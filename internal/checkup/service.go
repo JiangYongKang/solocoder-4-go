@@ -38,6 +38,10 @@ func (s *Store) generateID(prefix string) string {
 	return fmt.Sprintf("%s%010d", prefix, s.idCounter)
 }
 
+func floatPtr(f float64) *float64 {
+	return &f
+}
+
 func (s *Store) AddPatient(patient *Patient) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -63,8 +67,8 @@ type AddItemRequest struct {
 	Description string
 	Category    ItemCategory
 	Unit        string
-	MinValue    float64
-	MaxValue    float64
+	MinValue    *float64
+	MaxValue    *float64
 	Price       float64
 }
 
@@ -72,14 +76,24 @@ func (s *Store) AddItem(req *AddItemRequest) *CheckItem {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	var minVal, maxVal *float64
+	if req.MinValue != nil {
+		v := *req.MinValue
+		minVal = &v
+	}
+	if req.MaxValue != nil {
+		v := *req.MaxValue
+		maxVal = &v
+	}
+
 	item := &CheckItem{
 		ID:          s.generateID("ITM"),
 		Name:        req.Name,
 		Description: req.Description,
 		Category:    req.Category,
 		Unit:        req.Unit,
-		MinValue:    req.MinValue,
-		MaxValue:    req.MaxValue,
+		MinValue:    minVal,
+		MaxValue:    maxVal,
 		Price:       req.Price,
 	}
 	s.items[item.ID] = item
@@ -338,6 +352,10 @@ func (s *Store) RecordResult(req *RecordResultRequest) (*CheckResult, error) {
 		return nil, ErrAppointmentCancelled
 	}
 
+	if _, reportExists := s.reports[req.AppointmentID]; reportExists {
+		return nil, ErrReportAlreadyGenerated
+	}
+
 	if _, exists := s.packages[appt.PackageID]; !exists {
 		return nil, ErrPackageNotFound
 	}
@@ -359,9 +377,25 @@ func (s *Store) RecordResult(req *RecordResultRequest) (*CheckResult, error) {
 	var isAbnormal bool
 	var reference string
 	if isNumeric {
-		if item.MinValue != 0 || item.MaxValue != 0 {
-			reference = fmt.Sprintf("%.2f - %.2f %s", item.MinValue, item.MaxValue, item.Unit)
-			if numericValue < item.MinValue || numericValue > item.MaxValue {
+		hasRange := item.MinValue != nil || item.MaxValue != nil
+		if hasRange {
+			var minStr, maxStr string
+			if item.MinValue != nil {
+				minStr = fmt.Sprintf("%.2f", *item.MinValue)
+			} else {
+				minStr = "-∞"
+			}
+			if item.MaxValue != nil {
+				maxStr = fmt.Sprintf("%.2f", *item.MaxValue)
+			} else {
+				maxStr = "+∞"
+			}
+			reference = fmt.Sprintf("%s - %s %s", minStr, maxStr, item.Unit)
+
+			if item.MinValue != nil && numericValue < *item.MinValue {
+				isAbnormal = true
+			}
+			if item.MaxValue != nil && numericValue > *item.MaxValue {
 				isAbnormal = true
 			}
 		}

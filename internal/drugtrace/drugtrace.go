@@ -62,7 +62,7 @@ func (s *DrugTraceService) InboundBatch(
 
 	now := time.Now()
 	status := BatchStatusNormal
-	if expiryDate.Before(now) || expiryDate.Equal(now) {
+	if isDateExpired(expiryDate, now) {
 		status = BatchStatusExpired
 	}
 
@@ -117,14 +117,13 @@ func (s *DrugTraceService) GetExpiringBatches(days int) ([]*Batch, error) {
 	defer s.mu.RUnlock()
 
 	now := time.Now()
-	cutoff := now.AddDate(0, 0, days)
 
 	result := make([]*Batch, 0)
 	for _, batch := range s.batches {
 		if batch.Status == BatchStatusRecalled {
 			continue
 		}
-		if batch.ExpiryDate.Before(cutoff) || batch.ExpiryDate.Equal(cutoff) {
+		if isDateWithinDays(batch.ExpiryDate, now, days) {
 			result = append(result, batch)
 		}
 	}
@@ -144,7 +143,7 @@ func (s *DrugTraceService) GetExpiredBatches() ([]*Batch, error) {
 	result := make([]*Batch, 0)
 	for _, batch := range s.batches {
 		if batch.Status == BatchStatusExpired ||
-			(batch.Status == BatchStatusNormal && (batch.ExpiryDate.Before(now) || batch.ExpiryDate.Equal(now))) {
+			(batch.Status == BatchStatusNormal && isDateExpired(batch.ExpiryDate, now)) {
 			result = append(result, batch)
 		}
 	}
@@ -175,6 +174,8 @@ func (s *DrugTraceService) OutboundFIFO(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	now := time.Now()
+
 	if _, exists := s.drugs[drugCode]; !exists {
 		return nil, ErrDrugNotFound
 	}
@@ -192,8 +193,7 @@ func (s *DrugTraceService) OutboundFIFO(
 		if batch.Status == BatchStatusExpired {
 			continue
 		}
-		now := time.Now()
-		if batch.ExpiryDate.Before(now) || batch.ExpiryDate.Equal(now) {
+		if isDateExpired(batch.ExpiryDate, now) {
 			batch.Status = BatchStatusExpired
 			continue
 		}
@@ -233,8 +233,7 @@ func (s *DrugTraceService) OutboundFIFO(
 			break
 		}
 
-		now := time.Now()
-		if batch.ExpiryDate.Before(now) || batch.ExpiryDate.Equal(now) {
+		if isDateExpired(batch.ExpiryDate, now) {
 			batch.Status = BatchStatusExpired
 			continue
 		}
@@ -394,8 +393,7 @@ func (s *DrugTraceService) UpdateBatchStatus() {
 
 	now := time.Now()
 	for _, batch := range s.batches {
-		if batch.Status == BatchStatusNormal &&
-			(batch.ExpiryDate.Before(now) || batch.ExpiryDate.Equal(now)) {
+		if batch.Status == BatchStatusNormal && isDateExpired(batch.ExpiryDate, now) {
 			batch.Status = BatchStatusExpired
 		}
 	}

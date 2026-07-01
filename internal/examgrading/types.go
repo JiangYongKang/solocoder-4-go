@@ -24,6 +24,20 @@ var (
 	ErrQuestionNotFound       = errors.New("question not found in exam")
 )
 
+type DuplicateSubmissionError struct {
+	ExistingSubmissionID string
+	StudentID            string
+	ExamID               string
+}
+
+func (e *DuplicateSubmissionError) Error() string {
+	return ErrAlreadySubmitted.Error()
+}
+
+func (e *DuplicateSubmissionError) Unwrap() error {
+	return ErrAlreadySubmitted
+}
+
 type QuestionType string
 
 const (

@@ -78,17 +78,25 @@ func (svc *Service) CreatePrescription(req *CreatePrescriptionRequest) (*Prescri
 
 	for _, item := range req.Items {
 		if item.Quantity <= 0 {
+			for medID, qty := range reservedStock {
+				svc.store.releaseStock(medID, qty)
+			}
 			return nil, ErrInvalidQuantity
 		}
 
 		medicine, exists := svc.store.medicines[item.MedicineID]
 		if !exists {
+			for medID, qty := range reservedStock {
+				svc.store.releaseStock(medID, qty)
+			}
 			return nil, ErrMedicineNotFound
 		}
 
-		inventoryItem, invExists := svc.store.inventory[item.MedicineID]
-		if !invExists || inventoryItem.Quantity-inventoryItem.Reserved < item.Quantity {
-			return nil, ErrInsufficientStock
+		if err := svc.store.reserveStock(medicine.ID, item.Quantity); err != nil {
+			for medID, qty := range reservedStock {
+				svc.store.releaseStock(medID, qty)
+			}
+			return nil, err
 		}
 
 		prescriptionItems = append(prescriptionItems, MedicineItem{
@@ -104,12 +112,6 @@ func (svc *Service) CreatePrescription(req *CreatePrescriptionRequest) (*Prescri
 
 		reservedStock[medicine.ID] = item.Quantity
 		totalAmount += medicine.UnitPrice * float64(item.Quantity)
-	}
-
-	for medicineID, quantity := range reservedStock {
-		if err := svc.store.reserveStock(medicineID, quantity); err != nil {
-			return nil, err
-		}
 	}
 
 	prescription := &Prescription{
@@ -154,13 +156,16 @@ func (svc *Service) ReviewPrescription(req *ReviewRequest) (*Prescription, error
 		return nil, ErrPharmacyNotFound
 	}
 
+	if !req.Approved {
+		if req.RejectReason == "" {
+			return nil, ErrRejectReasonRequired
+		}
+	}
+
 	now := time.Now()
 	if req.Approved {
 		prescription.Status = StatusApproved
 	} else {
-		if req.RejectReason == "" {
-			req.RejectReason = "未提供驳回原因"
-		}
 		prescription.Status = StatusRejected
 		prescription.RejectReason = req.RejectReason
 		for medicineID, quantity := range prescription.ReservedStock {

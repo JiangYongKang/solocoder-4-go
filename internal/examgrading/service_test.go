@@ -1,6 +1,7 @@
 package examgrading
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -427,7 +428,7 @@ func TestSubmitExam_DuplicateSubmission(t *testing.T) {
 	}
 
 	_, err = store.SubmitExam(submitReq)
-	if err != ErrAlreadySubmitted {
+	if !errors.Is(err, ErrAlreadySubmitted) {
 		t.Errorf("expected ErrAlreadySubmitted, got %v", err)
 	}
 
@@ -1546,7 +1547,7 @@ func TestFullWorkflow(t *testing.T) {
 	}
 
 	_, err = store.SubmitExam(submitReq)
-	if err != ErrAlreadySubmitted {
+	if !errors.Is(err, ErrAlreadySubmitted) {
 		t.Errorf("Step 4 - Expected ErrAlreadySubmitted for duplicate submission, got %v", err)
 	}
 
@@ -1782,4 +1783,175 @@ func TestZeroScore(t *testing.T) {
 			t.Errorf("question %s should be wrong", qID)
 		}
 	}
+}
+
+func TestMultipleChoiceOriginalOrderPreserved(t *testing.T) {
+	store := setupTestStore()
+	teacherID := getFirstID(store, "teacher")
+	studentID := getFirstID(store, "student")
+
+	originalAnswer := []string{"B", "D", "A", "C"}
+	originalCopy := make([]string, len(originalAnswer))
+	copy(originalCopy, originalAnswer)
+
+	questions := []*Question{
+		{
+			Type:         QuestionTypeMultipleChoice,
+			Content:      "多选题测试",
+			Options:      []string{"A", "B", "C", "D"},
+			Score:        100,
+			CorrectAnswer: originalAnswer,
+		},
+	}
+
+	now := time.Now()
+	createReq := &CreateExamRequest{
+		Title:     "多选题原始顺序测试",
+		TeacherID: teacherID,
+		Questions: questions,
+		StartTime: now.Add(-1 * time.Minute),
+		EndTime:   now.Add(1 * time.Hour),
+	}
+
+	exam, err := store.CreateExam(createReq)
+	if err != nil {
+		t.Fatalf("CreateExam failed: %v", err)
+	}
+	store.PublishExam(exam.ID)
+
+	qID := exam.Questions[0].ID
+
+	submitReq := &SubmitExamRequest{
+		ExamID:    exam.ID,
+		StudentID: studentID,
+		Answers: []AnswerSubmission{
+			{QuestionID: qID, Answer: []string{"A", "B", "C", "D"}},
+		},
+	}
+
+	_, err = store.SubmitExam(submitReq)
+	if err != nil {
+		t.Fatalf("SubmitExam failed: %v", err)
+	}
+
+	updatedExam, _ := store.GetExam(exam.ID)
+	updatedAnswer, ok := updatedExam.Questions[0].CorrectAnswer.([]string)
+	if !ok {
+		t.Fatal("correct answer should be []string")
+	}
+
+	for i := range originalCopy {
+		if updatedAnswer[i] != originalCopy[i] {
+			t.Errorf("original answer order changed at index %d: expected %s, got %s",
+				i, originalCopy[i], updatedAnswer[i])
+		}
+	}
+
+	t.Logf("Original answer order: %v, After grading: %v", originalCopy, updatedAnswer)
+
+	submitReq2 := &SubmitExamRequest{
+		ExamID:    exam.ID,
+		StudentID: getFirstID(store, "student2"),
+		Answers: []AnswerSubmission{
+			{QuestionID: qID, Answer: []string{"C", "B"}},
+		},
+	}
+
+	_, err = store.SubmitExam(submitReq2)
+	if err != nil {
+		t.Fatalf("Second SubmitExam failed: %v", err)
+	}
+
+	updatedExam2, _ := store.GetExam(exam.ID)
+	updatedAnswer2, ok := updatedExam2.Questions[0].CorrectAnswer.([]string)
+	if !ok {
+		t.Fatal("correct answer should be []string")
+	}
+
+	for i := range originalCopy {
+		if updatedAnswer2[i] != originalCopy[i] {
+			t.Errorf("original answer order changed after second submission at index %d: expected %s, got %s",
+				i, originalCopy[i], updatedAnswer2[i])
+		}
+	}
+
+	t.Logf("After second submission, answer order: %v", updatedAnswer2)
+}
+
+func TestDuplicateSubmissionReturnsExistingID(t *testing.T) {
+	store := setupTestStore()
+	teacherID := getFirstID(store, "teacher")
+	studentID := getFirstID(store, "student")
+
+	now := time.Now()
+	createReq := &CreateExamRequest{
+		Title:       "重复提交返回ID测试",
+		TeacherID:   teacherID,
+		Questions:   createSampleQuestions(),
+		StartTime:   now.Add(-1 * time.Minute),
+		EndTime:     now.Add(1 * time.Hour),
+	}
+
+	exam, _ := store.CreateExam(createReq)
+	store.PublishExam(exam.ID)
+
+	answers := make([]AnswerSubmission, len(exam.Questions))
+	for i, q := range exam.Questions {
+		answers[i] = AnswerSubmission{QuestionID: q.ID, Answer: q.CorrectAnswer}
+	}
+
+	submitReq := &SubmitExamRequest{
+		ExamID:    exam.ID,
+		StudentID: studentID,
+		Answers:   answers,
+	}
+
+	firstSubmission, err := store.SubmitExam(submitReq)
+	if err != nil {
+		t.Fatalf("First submission failed: %v", err)
+	}
+
+	_, err = store.SubmitExam(submitReq)
+	if err == nil {
+		t.Fatal("expected error for duplicate submission, got nil")
+	}
+
+	var dupErr *DuplicateSubmissionError
+	if !errors.As(err, &dupErr) {
+		t.Fatalf("expected *DuplicateSubmissionError, got %T", err)
+	}
+
+	if dupErr.ExistingSubmissionID != firstSubmission.ID {
+		t.Errorf("expected existing submission ID %s, got %s",
+			firstSubmission.ID, dupErr.ExistingSubmissionID)
+	}
+
+	if dupErr.StudentID != studentID {
+		t.Errorf("expected student ID %s, got %s", studentID, dupErr.StudentID)
+	}
+
+	if dupErr.ExamID != exam.ID {
+		t.Errorf("expected exam ID %s, got %s", exam.ID, dupErr.ExamID)
+	}
+
+	if dupErr.Error() != ErrAlreadySubmitted.Error() {
+		t.Errorf("expected error message '%s', got '%s'",
+			ErrAlreadySubmitted.Error(), dupErr.Error())
+	}
+
+	if !errors.Is(err, ErrAlreadySubmitted) {
+		t.Error("expected error to wrap ErrAlreadySubmitted")
+	}
+
+	fetchedSubmission, err := store.GetSubmission(dupErr.ExistingSubmissionID)
+	if err != nil {
+		t.Fatalf("Failed to fetch submission using returned ID: %v", err)
+	}
+
+	if fetchedSubmission.ID != firstSubmission.ID {
+		t.Errorf("fetched submission ID mismatch: expected %s, got %s",
+			firstSubmission.ID, fetchedSubmission.ID)
+	}
+
+	t.Logf("Duplicate submission correctly returned existing ID: %s", dupErr.ExistingSubmissionID)
 }

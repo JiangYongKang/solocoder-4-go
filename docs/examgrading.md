@@ -247,6 +247,41 @@ submissionMap map[string]string  // key: studentID + "-" + examID, value: submis
 | `ErrStudentNotFound` | 学生不存在 | 交卷/申请复核时学生ID无效 |
 | `ErrTeacherNotFound` | 教师不存在 | 创建试卷/处理复核时教师ID无效 |
 | `ErrAlreadySubmitted` | 已提交过 | 同一考生对同一试卷重复提交 |
+
+### 7.2 自定义错误类型
+
+#### DuplicateSubmissionError
+
+当检测到重复交卷时，返回 `*DuplicateSubmissionError` 类型的错误，包含已有提交记录的详细信息：
+
+```go
+type DuplicateSubmissionError struct {
+    ExistingSubmissionID string  // 已有提交记录的ID
+    StudentID            string  // 学生ID
+    ExamID               string  // 试卷ID
+}
+```
+
+**特点：**
+- 实现了 `error` 接口，错误消息与 `ErrAlreadySubmitted` 一致
+- 实现了 `Unwrap() error` 方法，支持 `errors.Is(err, ErrAlreadySubmitted)` 检查
+- 调用方可以通过类型断言获取已有提交记录的 ID，便于后续查询
+
+**使用示例：**
+
+```go
+_, err := store.SubmitExam(submitReq)
+if err != nil {
+    if errors.Is(err, ErrAlreadySubmitted) {
+        var dupErr *DuplicateSubmissionError
+        if errors.As(err, &dupErr) {
+            fmt.Printf("已有提交记录ID: %s\n", dupErr.ExistingSubmissionID)
+            // 通过返回的ID查询已有提交记录
+            existingSubmission, _ := store.GetSubmission(dupErr.ExistingSubmissionID)
+        }
+    }
+}
+```
 | `ErrSubmissionNotFound` | 答卷不存在 | 查询/申请复核时答卷ID无效 |
 | `ErrReviewNotFound` | 复核记录不存在 | 查询/处理复核时记录ID无效 |
 | `ErrInvalidTimeRange` | 时间范围非法 | 创建试卷时开始时间≥结束时间 |

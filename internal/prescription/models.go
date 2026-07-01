@@ -110,6 +110,7 @@ var (
 	ErrInvalidQuantity      = errors.New("invalid medicine quantity, must be greater than 0")
 	ErrNotApproved          = errors.New("prescription is not approved")
 	ErrCannotWithdraw       = errors.New("prescription cannot be withdrawn in current status")
+	ErrRejectReasonRequired = errors.New("reject reason is required when rejecting a prescription")
 )
 
 type Store struct {
